@@ -1,0 +1,8 @@
+*Diagnostics.txt
+settings.xml
+test-settings/
+*.log
+ASUS Utility LITE Tests.exe
+ASUS-Utility-LITE.exe
+ASUS-Utility-LITE.zip
+SHA256SUMS.txt

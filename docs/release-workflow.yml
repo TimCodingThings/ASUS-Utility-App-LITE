@@ -1,0 +1,47 @@
+name: Build and publish ASUS Utility LITE
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Source/**'
+      - 'Build.ps1'
+      - 'Test.ps1'
+      - 'VERSION'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: pwsh
+        run: ./Build.ps1
+      - name: Offline checks
+        shell: pwsh
+        run: ./Test.ps1
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath 'ASUS Utility LITE.exe' -Destination 'ASUS-Utility-LITE.exe'
+          $packageFiles = @('ASUS Utility LITE.exe', 'ASUS Utility LITE Diagnostics.cmd', 'README.md', 'README.txt', 'LICENSE.txt', 'RELEASE_NOTES.md', 'VERSION', 'Build.ps1', 'Test.ps1', 'Source')
+          Compress-Archive -LiteralPath $packageFiles -DestinationPath 'ASUS-Utility-LITE.zip'
+          Get-FileHash -LiteralPath 'ASUS-Utility-LITE.exe', 'ASUS-Utility-LITE.zip' -Algorithm SHA256 | ForEach-Object { '{0}  {1}' -f $_.Hash.ToLowerInvariant(), (Split-Path -Leaf $_.Path) } | Set-Content -LiteralPath 'SHA256SUMS.txt' -Encoding ascii
+      - name: Publish public release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid VERSION' }
+          $tag = 'v' + $version
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'This version is already published. Bump VERSION before releasing again.' }
+          gh release create $tag 'ASUS-Utility-LITE.exe' 'ASUS-Utility-LITE.zip' 'SHA256SUMS.txt' --title "ASUS Utility LITE $version" --notes-file RELEASE_NOTES.md --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
