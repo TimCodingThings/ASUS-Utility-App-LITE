@@ -1,12 +1,10 @@
-ASUS Utility LITE 1.1.0
+ASUS Utility LITE 1.2.3
 
-- Renamed application, executable, window/tray titles, settings location, startup entry, and package.
-- Imports the previous Lite settings and replaces its startup entry when first launched.
-- Includes the supplied battery/gear icon.
-- Performance and GPU profiles, automatic refresh-rate switching, and battery charge limit.
-- Charging/discharging watts and estimated battery time remaining.
-- Simplified cooling controls with optional Advanced settings in the same window.
-- No scrollbars or mouse-wheel setting changes.
-- Full GPL-3.0 source, build scripts, and 24 offline checks included.
+- Makes approved-launcher validation accept equivalent Task Scheduler XML: omitted default-enabled settings, boolean lexical forms, zero-duration formats, and account names resolving to the expected user SID.
+- Keeps checks for the fixed executable, arguments, directory, elevated user, on-demand behavior, and battery operation.
+- Reports the exact validation mismatch and records the returned task XML in Launcher setup.log when registration readback fails.
+- Includes 74 offline checks, including first-time setup and normalized task exports.
 
-Windows 10/11 x64. Requires .NET Framework 4.8, the ASUS System Control Interface driver, and administrator access for hardware controls. Developed around the ROG Zephyrus G14 GA403UP; other models are not validated. The executable is unsigned. Hardware writes are not comprehensively validated; see the README for current testing limits.
+The existing approved launch task can be reused when valid; reinstalling it is not necessary just because a previous app reported a readback error. Normal prompt-free launch still depends on Windows Task Scheduler access for the current administrator account.
+
+Retains AMD/Intel Zephyrus compatibility, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes still need physical validation. Independent app, not an official ASUS product.

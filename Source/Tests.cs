@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Drawing;
+using System.Windows.Forms;
 namespace ASUSUtilityLite {
 public class FakeHardware : IHardware {
     internal Dictionary<uint,int> Values=new Dictionary<uint,int> {
@@ -8,8 +11,9 @@ public class FakeHardware : IHardware {
         {Id.Fans[0],38},{Id.Fans[1],41},{Id.Fans[2],51},{Id.Power[0],35},{Id.Power[1],45},{Id.Power[2],65}
     };
     internal int Writes,ModeReads;
+    internal HashSet<uint> UnsupportedCurves=new HashSet<uint>();
     public int Get(uint id) {if(id==Id.Mode)ModeReads++;return Values.ContainsKey(id)?Values[id]:-1;}
-    public byte[] Read(uint id,int argument) {return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
+    public byte[] Read(uint id,int argument) {if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
     public void Set(uint id,byte[] value) {Writes++; if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);}
     public void Dispose() {}
 }
@@ -55,12 +59,114 @@ static class Tests {
                 Assert(hw.ModeReads==0,"Performance selection does not use ambiguous ASUS readback");
             }
             Assert(System.Runtime.InteropServices.Marshal.SizeOf(typeof(Display.Mode))==220,"Win32 Unicode DEVMODE layout");
+            Compatibility();
+            Launcher();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
             var read=Preferences.Load();Assert(read.Optimized&&read.AutoScreen&&read.ChargeConfigured&&read.ChargeLimit==80,"Atomic settings round trip");
             File.Delete(Path.Combine(Preferences.Folder,"settings.xml"));Directory.Delete(Preferences.Folder);Preferences.Folder=old;
         } catch(Exception ex) {Console.WriteLine("FAIL "+ex);Environment.ExitCode=1;}
+    }
+    static void Compatibility() {
+        Assert(!LaptopCapabilities.GpuAvailable(2,-1,0)&&LaptopCapabilities.GpuAvailable(0,-1,0)&&LaptopCapabilities.GpuAvailable(3,-1,0),"Older Zephyrus without MUX retains Eco and Optimized");
+        Assert(LaptopCapabilities.GpuAvailable(2,1,-1)&&LaptopCapabilities.GpuAvailable(1,0,-1)&&!LaptopCapabilities.GpuAvailable(0,0,-1),"MUX-only laptop supports Ultimate and returning to Standard");
+        Assert(!Enumerable.Range(0,4).Any(i=>LaptopCapabilities.GpuAvailable(i,-1,-1))&&LaptopCapabilities.GpuName(-1,-1)=="Unavailable","Missing GPU controls do not claim Hybrid mode");
+        Assert(!Enumerable.Range(0,4).Any(i=>LaptopCapabilities.GpuAvailable(i,3,3)),"Packed or ambiguous GPU states do not enable controls");
+        using(var hw=new FakeHardware()) {
+            var modern=LaptopCapabilities.PowerLimits(hw,"AuthenticAMD");
+            Assert(modern.Length==3&&modern[0].Id==Id.Power[0]&&modern[2].Name=="fPPT","Modern AMD Zephyrus keeps SPL sPPT fPPT layout");
+            var intel=LaptopCapabilities.PowerLimits(hw,"GenuineIntel");
+            Assert(intel.Length==2&&intel[0].Name=="PL1"&&intel[1].Name=="PL2"&&intel[1].Id==Id.Power[1],"Intel Zephyrus uses PL1 PL2 without AMD fast limit");
+            hw.Values[Id.CpuPpt]=45;hw.Values[Id.TotalPpt]=80;
+            Assert(LaptopCapabilities.PowerLimits(hw,"AuthenticAMD").Length==3,"Modern AMD limits take precedence over legacy endpoints");
+            foreach(uint id in Id.Power)hw.Values.Remove(id);
+            var legacy=LaptopCapabilities.PowerLimits(hw,"AuthenticAMD");
+            Assert(legacy.Length==2&&legacy[0].Id==Id.CpuPpt&&legacy[1].Id==Id.TotalPpt&&legacy[1].Name=="Total PPT","Older AMD firmware uses CPU and total package limits");
+            Assert(LaptopCapabilities.PowerLimits(hw,"GenuineIntel").Length==0&&LaptopCapabilities.PowerLimits(hw,"").Length==0,"Legacy AMD endpoints are not offered on Intel or unknown CPUs");
+            hw.Values.Remove(Id.CpuPpt);hw.Values.Remove(Id.TotalPpt);
+            Assert(LaptopCapabilities.PowerLimits(hw,"AuthenticAMD").Length==0,"No custom power controls when endpoints are missing");
+            hw.UnsupportedCurves.Add(Id.Curves[2]);hw.Values[Id.Fans[0]]=0;
+            Assert(LaptopCapabilities.CurveFans(hw,0).SequenceEqual(new[]{0,1}),"Two-fan Zephyrus omits absent middle curve and retains stopped CPU fan");
+            hw.UnsupportedCurves.Add(Id.Curves[0]);
+            Assert(LaptopCapabilities.CurveFans(hw,0).SequenceEqual(new[]{1}),"Sparse fan choices preserve GPU endpoint mapping");
+            hw.UnsupportedCurves.Add(Id.Curves[1]);
+            Assert(LaptopCapabilities.CurveFans(hw,0).Length==0&&LaptopCapabilities.CurveFans(hw,-1).Length==0,"No fan editor without valid curves or selected profile");
+            hw.Values[Id.Mux]=-1;hw.Values[Id.Eco]=-1;hw.Values[Id.Fans[2]]=-1;hw.Writes=0;
+            using(var form=new MainForm(hw,new Preferences(),true)) {
+                form.Show();Application.DoEvents();form.Location=new Point(80,80);Point anchor=form.Location;
+                form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
+                var choices=Descendants(form).OfType<ComboBox>().Single();
+                Assert(choices.Items.Count==0&&!choices.Enabled,"Unsupported fan curves leave an empty disabled selector");
+                Assert(!Descendants(form).OfType<NumericUpDown>().Any(n=>n.Enabled),"Absent fan and power endpoints disable advanced editors");
+                Assert(Descendants(form).OfType<Button>().Where(b=>new[]{"Eco","Standard","Ultimate","Optimized"}.Contains(b.Text)).All(b=>!b.Enabled),"Main window disables absent GPU controls");
+                form.fansPanel.ToggleAdvanced();form.ToggleFans();
+                Assert(form.Location==anchor&&!form.AutoScroll,"Compatibility layouts preserve window position without scrolling");
+            }
+            Assert(hw.Writes==0,"Detecting unsupported model features performs no hardware writes");
+        }
+        foreach(float scale in new[]{1f,1.5f,2f})foreach(string vendor in new[]{"AuthenticAMD","GenuineIntel"}) {
+            using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences(),true,vendor,scale)) {
+                form.Show();Application.DoEvents();form.Location=new Point(0,0);Point anchor=form.Location;
+                form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
+                var choice=Descendants(form).OfType<ComboBox>().Single();
+                bool fits=Descendants(form).Where(c=>c.Visible).All(c=>c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1);
+                Assert(fits&&choice.SelectedIndex==0&&choice.Text=="CPU"&&form.Location==anchor&&!form.AutoScroll,"Advanced "+vendor+" layout and selected fan at "+(scale*100)+"% DPI");
+            }
+        }
+    }
+    static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
+        foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    sealed class ActivationForm : MainForm {
+        internal ActivationForm(IHardware hw):base(hw,new Preferences(),true) {}
+        internal void RequestOpen() {var message=Message.Create(Handle,(int)WindowActivation.Message,IntPtr.Zero,IntPtr.Zero);base.WndProc(ref message);}
+    }
+    static void Launcher() {
+        string path=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Folder & Space","ASUS Utility LITE.exe"),sid="S-1-5-21-111-222-333-1001";
+        string xml=ElevatedLaunch.Definition(path,sid);
+        bool exists=false;int registrations=0;
+        ElevatedLaunch.EnsureTask(()=> {if(!exists)throw System.Runtime.InteropServices.Marshal.GetExceptionForHR(unchecked((int)0x80070002));return xml;},()=> {exists=true;registrations++;},path,sid);
+        Assert(exists&&registrations==1,"First launch creates task after managed file-not-found HRESULT");
+        ElevatedLaunch.EnsureTask(()=>xml,()=>registrations++,path,sid);
+        Assert(registrations==1,"Existing approved task is reused without re-registration");
+        exists=false;
+        ElevatedLaunch.EnsureTask(()=> {if(!exists)throw new System.Runtime.InteropServices.COMException("Missing task",unchecked((int)0x80070002));return xml;},()=> {exists=true;},path,sid);
+        Assert(exists,"First launch also handles COM-style missing-task errors");
+        bool denied=false;registrations=0;
+        try {ElevatedLaunch.EnsureTask(()=> {throw System.Runtime.InteropServices.Marshal.GetExceptionForHR(unchecked((int)0x80070005));},()=>registrations++,path,sid);}
+        catch(UnauthorizedAccessException) {denied=true;}
+        Assert(denied&&registrations==0,"Scheduler access denial is preserved rather than mistaken for a missing task");
+        bool invalid=false;
+        try {ElevatedLaunch.EnsureTask(()=>"invalid XML",()=>registrations++,path,sid);}catch(InvalidOperationException) {invalid=true;}
+        Assert(invalid&&registrations==1,"Registration must pass readback validation before reporting approval");
+        exists=false;registrations=0;
+        ElevatedLaunch.EnsureTask(()=>exists?xml:xml.Replace("--scheduled-launch","--background"),()=> {exists=true;registrations++;},path,sid);
+        Assert(registrations==1,"Stale launcher definition is replaced and verified");
+        Assert(ElevatedLaunch.Matches(xml,path,sid),"Approved launch task supports spaces and XML-special path characters");
+        Assert(ElevatedLaunch.Matches(xml.Replace("<AllowStartOnDemand>true</AllowStartOnDemand>","").Replace("<Enabled>true</Enabled>",""),path,sid),"Scheduler XML may omit settings whose schema default is true");
+        Assert(ElevatedLaunch.Matches(xml.Replace(" Context=\"User\"",""),path,sid),"Implicit action context uses the sole validated user principal");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("Context=\"User\"","Context=\"Other\""),path,sid),"Explicit action context must match the validated principal");
+        Assert(ElevatedLaunch.Matches(xml.Replace(">true<",">1<").Replace(">false<",">0<").Replace("PT0S","P0D"),path,sid),"Equivalent XML boolean and unlimited-duration values are accepted");
+        string accountXml=xml.Replace(sid,@"LAPTOP\Owner");
+        Assert(ElevatedLaunch.ValidationError(accountXml,path,sid,name=>name==@"LAPTOP\Owner"?sid:"")==null,"Exported account name is resolved to the approved user SID");
+        Assert(ElevatedLaunch.ValidationError(accountXml,path,sid,name=>sid+"0")!=null,"Account-name normalization cannot approve a different user");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",""),path,sid),"Missing battery setting uses restrictive schema default");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",""),path,sid),"Missing execution limit does not imply unlimited time");
+        Assert(ElevatedLaunch.ValidationError(xml,path+".old",sid).Contains("Executable path"),"Task validation identifies the mismatching field");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("</Actions>","<Exec><Command>other.exe</Command></Exec></Actions>"),path,sid),"Task normalization still rejects additional executable actions");
+        Assert(!ElevatedLaunch.Matches(xml,path+".old",sid),"Moved executable requires fresh approval");
+        Assert(!ElevatedLaunch.Matches(xml,path,sid+"0"),"Approved launch task is restricted to the current user");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("HighestAvailable","LeastPrivilege"),path,sid),"Unelevated launch task is rejected");
+        Assert(!ElevatedLaunch.Matches(xml.Replace(ElevatedLaunch.Arguments,"--background"),path,sid),"Manual launcher cannot silently reuse background-startup action");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("Parallel","IgnoreNew"),path,sid),"Launch task allows reopening while the first process runs");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("<DisallowStartIfOnBatteries>false","<DisallowStartIfOnBatteries>true"),path,sid),"Approved launch works on battery power");
+        Assert(!ElevatedLaunch.Matches(xml.Replace("<AllowStartOnDemand>true","<AllowStartOnDemand>false"),path,sid),"Disabled on-demand execution is rejected");
+        Assert(!ElevatedLaunch.Matches("invalid XML",path,sid),"Malformed task definition falls back to normal UAC");
+        using(var hw=new FakeHardware())using(var form=new ActivationForm(hw)) {
+            form.Show();Application.DoEvents();form.Hide();form.RequestOpen();Application.DoEvents();
+            Assert(WindowActivation.Message!=0&&form.Visible&&form.WindowState==FormWindowState.Normal&&hw.Writes==0,"Reopening restores the existing window without hardware writes");
+        }
     }
 }
 }

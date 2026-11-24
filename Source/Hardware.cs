@@ -12,7 +12,7 @@ public interface IHardware : IDisposable {
     void Set(uint id, byte[] value);
 }
 public static class Id {
-    public const uint Mode=0x120075, Eco=0x90020, Mux=0x90016, Battery=0x120057, DisplayConnect=0x90030;
+    public const uint Mode=0x120075, Eco=0x90020, Mux=0x90016, Battery=0x120057, DisplayConnect=0x90030, CpuPpt=0x1200B0, TotalPpt=0x1200B1;
     public const uint CpuTemp=0x120094, GpuTemp=0x120097;
     public static readonly uint[] Fans={0x110013,0x110014,0x110031};
     public static readonly uint[] Curves={0x110024,0x110025,0x110032};
@@ -20,7 +20,7 @@ public static class Id {
     public static void Write(this IHardware hw,uint id,int value) { hw.Set(id,BitConverter.GetBytes(value)); }
     public static void EcoMode(this IHardware hw,bool eco) {
         int current=hw.Get(Eco);
-        if(current<0) throw new InvalidOperationException("GPU switching is unavailable.");
+        if(!LaptopCapabilities.Binary(current)) throw new InvalidOperationException("GPU switching is unavailable.");
         int display=hw.Get(DisplayConnect);
         if(eco&&current==0&&display>=0&&((display>>4)&display&15)>0)
             throw new InvalidOperationException("Disconnect the external display connected to the dedicated GPU before enabling Eco.");
