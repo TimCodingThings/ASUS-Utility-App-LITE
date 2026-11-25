@@ -63,6 +63,7 @@ static class Tests {
             Compatibility();
             Launcher();
             RememberedState();
+            ScrollingFans();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
@@ -112,13 +113,41 @@ static class Tests {
                 form.Show();Application.DoEvents();form.Location=new Point(0,0);Point anchor=form.Location;
                 form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
                 var choice=Descendants(form).OfType<ComboBox>().Single();
-                bool fits=Descendants(form).Where(c=>c.Visible).All(c=>c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1);
+                bool fits=Descendants(form).Where(c=>c.Visible&&c!=form.contentHost.Content).All(c=>c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1);
+                if(!fits)foreach(var c in Descendants(form).Where(c=>c.Visible&&c!=form.contentHost.Content&&!(c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1)))Console.WriteLine("Layout overflow: "+c.GetType().Name+" "+c.Text+" "+c.Bounds+" parent="+c.Parent.ClientSize);
                 Assert(fits&&choice.SelectedIndex==0&&choice.Text=="CPU"&&form.Location==anchor&&!form.AutoScroll,"Advanced "+vendor+" layout and selected fan at "+(scale*100)+"% DPI");
             }
         }
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    static void WheelMessage(Control control,int delta) {
+        var message=Message.Create(control.Handle,0x20A,new IntPtr((long)(ushort)(short)delta<<16),IntPtr.Zero);
+        control.GetType().GetMethod("WndProc",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).Invoke(control,new object[]{message});
+    }
+    static void ScrollingFans() {
+        foreach(float scale in new[]{1f,1.5f,2f})using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences(),true,"AuthenticAMD",scale)) {
+            form.Show();Application.DoEvents();form.Location=new Point(50,50);Point anchor=form.Location;Size size=form.Size;
+            form.ToggleFans();Application.DoEvents();
+            Assert(form.Size==size&&form.Location==anchor&&form.contentHost.CanScroll&&form.fansPanel.FindForm()==form,"Simple cooling scrolls inside the original window at "+(scale*100)+"% DPI");
+            form.fansPanel.ToggleAdvanced();Application.DoEvents();form.contentHost.ScrollTo(int.MaxValue);
+            var viewport=form.contentHost;
+            Assert(form.Size==size&&form.Location==anchor&&!form.AutoScroll&&!viewport.AutoScroll&&viewport.Content.Bottom==viewport.ClientSize.Height&&Descendants(form).Where(c=>c.Parent==viewport.Content&&c.Visible).All(c=>c.Right<=viewport.Content.Width),"Advanced cooling reaches the bottom without horizontal scrolling at "+(scale*100)+"% DPI");
+            var slider=Descendants(form).OfType<PointerTrackBar>().Single();int limit=slider.Value;
+            viewport.ScrollTo(0);WheelMessage(slider,-120);
+            Assert(slider.Value==limit&&(viewport.Offset>0||SystemInformation.MouseWheelScrollLines==0),"Wheel over charge slider scrolls without changing limit at "+(scale*100)+"% DPI");
+            var number=Descendants(form).OfType<NoWheelNumber>().First();decimal value=number.Value;
+            viewport.ScrollTo(0);WheelMessage(number,-120);
+            Assert(number.Value==value&&(viewport.Offset>0||SystemInformation.MouseWheelScrollLines==0),"Wheel over fan editor scrolls without changing value at "+(scale*100)+"% DPI");
+            var fan=Descendants(form).OfType<NoWheelComboBox>().Single();int index=fan.SelectedIndex;
+            viewport.ScrollTo(0);WheelMessage(fan,-120);
+            Assert(fan.SelectedIndex==index&&(viewport.Offset>0||SystemInformation.MouseWheelScrollLines==0),"Wheel over fan choice scrolls without changing selection at "+(scale*100)+"% DPI");
+            viewport.ScrollTo(0);number.Focus();Application.DoEvents();
+            Assert(viewport.Offset>0,"Keyboard focus reveals off-screen fan controls at "+(scale*100)+"% DPI");
+            form.fansPanel.ToggleAdvanced();form.ToggleFans();Application.DoEvents();
+            Assert(form.Size==size&&form.Location==anchor&&!viewport.CanScroll&&viewport.Offset==0&&hw.Writes==0,"Closing cooling restores the main view without resizing or hardware writes at "+(scale*100)+"% DPI");
+        }
     }
     static void RememberedState() {
         var primary=new Rectangle(0,0,1920,1040);var left=new Rectangle(-1920,0,1920,1040);var window=new Size(828,930);

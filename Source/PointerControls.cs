@@ -7,6 +7,7 @@ public class PointerTrackBar : TrackBar {
         int key=unchecked((int)message.WParam.ToInt64());
         if(message.Msg==0x20A||message.Msg==0x20E||
            ((message.Msg==0x100||message.Msg==0x101)&&key>=33&&key<=40)) {
+            WheelScroll.Forward(this,message);
             message.Result=IntPtr.Zero;return;
         }
         base.WndProc(ref message);
@@ -17,13 +18,13 @@ public class NoWheelNumber : NumericUpDown {
         var handled=e as HandledMouseEventArgs;if(handled!=null)handled.Handled=true;
     }
     protected override void WndProc(ref Message message) {
-        if(message.Msg==0x20A||message.Msg==0x20E){message.Result=IntPtr.Zero;return;}
+        if(message.Msg==0x20A||message.Msg==0x20E){WheelScroll.Forward(this,message);message.Result=IntPtr.Zero;return;}
         base.WndProc(ref message);
     }
 }
 public class NoWheelComboBox : ComboBox {
     protected override void WndProc(ref Message message) {
-        if(message.Msg==0x20A||message.Msg==0x20E){message.Result=IntPtr.Zero;return;}
+        if(message.Msg==0x20A||message.Msg==0x20E){WheelScroll.Forward(this,message);message.Result=IntPtr.Zero;return;}
         base.WndProc(ref message);
     }
 }

@@ -20,3 +20,9 @@
 - Run `Build.ps1` and `Test.ps1` for code changes, and verify affected layouts when changing the interface.
 - Develop in this Git checkout and synchronize the user's existing installed package in place.
 - Retain the supplied logo, GPL-3.0 licensing, and G-Helper attribution.
+
+## Interface preferences
+
+- Keep the main window's dimensions and position unchanged when opening or closing Fans + Power or Advanced.
+- Fans + Power stays inside the main window below the main controls, with vertical scrolling and no horizontal scrolling.
+- Mouse-wheel input scrolls the page, including over sliders, numeric editors, and fan selection; it must never change those settings.

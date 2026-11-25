@@ -97,9 +97,10 @@ static class Program {
             }
             float previewScale=args.Contains("--scale200")?2f:args.Contains("--scale150")?1.5f:1f;
             using(var form=new MainForm(sample,new Preferences(),true,vendor,previewScale)) {
+                form.Show(); Application.DoEvents();
                 if(args.Contains("--preview-fans"))form.ToggleFans();
                 if(args.Contains("--preview-advanced")) {form.ToggleFans();form.fansPanel.ToggleAdvanced();}
-                form.Show(); Application.DoEvents();
+                Application.DoEvents();
                 using(var bitmap=new Bitmap(form.Width,form.Height)) { form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size)); bitmap.Save(args.Last()); }
             }
             return;
@@ -181,6 +182,7 @@ public class MainForm : Form {
     readonly BatteryTelemetry batteryTelemetry=new BatteryTelemetry();
     readonly Label batteryPower=new Label(),batteryTime=new Label();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
+    internal readonly VerticalScrollPanel contentHost=new VerticalScrollPanel();
     NotifyIcon tray; bool quitting,initializing=true,paused; int lastPower=-1; string panel;
     int mode {get {return prefs.LastPerformanceMode>=0&&prefs.LastPerformanceMode<=2?prefs.LastPerformanceMode:preview?1:-1;}}
     public MainForm(IHardware hardware,Preferences settings,bool demo,string cpuVendor=null,float previewScale=0) {
@@ -221,6 +223,8 @@ public class MainForm : Form {
         fansToggle=ButtonAt("Fans + Power   ▸",18,382,378,28,ToggleFans); fansToggle.TextAlign=ContentAlignment.MiddleLeft;
         AddLabel(status,"",18,417,378,20); status.ForeColor=Color.Silver; status.Font=new Font(Font.FontFamily,8);
         ClientSize=new Size(414,443);
+        foreach(Control control in Controls.Cast<Control>().ToArray())contentHost.Content.Controls.Add(control);
+        contentHost.Dock=DockStyle.Fill;Controls.Add(contentHost);
         if(!preview) {
             var menu=new ContextMenuStrip(); menu.Items.Add("Open",null,(s,e)=> { Show(); WindowState=FormWindowState.Normal; Activate(); RefreshState(); });
             menu.Items.Add("About / license",null,(s,e)=>MessageBox.Show("ASUS Utility LITE "+Application.ProductVersion+"\nModified independent app using G-Helper ASUS protocol code.\nGPL-3.0; no warranty. Source and LICENSE.txt are included.\nhttps://github.com/seerge/g-helper", "About"));
@@ -235,6 +239,7 @@ public class MainForm : Form {
             if(preview&&previewScale>0)ScalePreviewFonts(this,UiScale/nativeScale);
         }
         Scale(new SizeF(UiScale,UiScale));
+        contentHost.SetContentHeight(contentHost.ClientSize.Height);
         initializing=false; RefreshState();
         timer.Interval=3000; timer.Tick+=(s,e)=> { timer.Interval=Visible?3000:30000; RefreshState(); }; if(!preview)timer.Start();
         SystemEvents.PowerModeChanged+=OnPower;
@@ -320,20 +325,19 @@ public class MainForm : Form {
         } catch(Exception ex) { status.Text=ex.Message; }
     }
     internal void ToggleFans() {
-        if(fansPanel==null) { fansPanel=new FansPanel(this,mode); fansPanel.Location=new Point((int)(414*UiScale),(int)(73*UiScale)); fansPanel.SizeChanged+=(s,e)=>LayoutFans(); Controls.Add(fansPanel); }
+        if(fansPanel==null) { fansPanel=new FansPanel(this,mode); fansPanel.Location=new Point((int)(18*UiScale),(int)(417*UiScale)); fansPanel.SizeChanged+=(s,e)=>LayoutFans(); contentHost.Content.Controls.Add(fansPanel); }
         fansExpanded=!fansExpanded; fansPanel.Visible=fansExpanded;
         LayoutFans();
     }
     void LayoutFans() {
         Point anchor=Location;
-        AutoScrollPosition=Point.Empty;
         bool expanded=fansExpanded;
+        limit.Width=(int)((expanded?381:386)*UiScale);
         fansToggle.Text="Fans + Power   "+(expanded?"▾":"▸");
-        status.Top=Math.Max(fansToggle.Bottom,expanded?fansPanel.Bottom:0)+(int)(7*UiScale);
-        int contentHeight=status.Bottom+(int)(8*UiScale);
-        // The inline side panel fits all controls without a scrollable surface.
-        AutoScroll=false;AutoScrollMinSize=Size.Empty;
-        ClientSize=new Size((int)((expanded?810:414)*UiScale),contentHeight);
+        status.Top=expanded?fansPanel.Bottom+(int)(7*UiScale):(int)(417*UiScale);
+        int contentHeight=expanded?status.Bottom+(int)(8*UiScale):contentHost.ClientSize.Height;
+        contentHost.SetContentHeight(contentHeight);
+        contentHost.ScrollTo(expanded?fansToggle.Top:0);
         Location=anchor;
     }
     internal void ChangeMode(int value) { Guard(); prefs.SelectPerformanceMode(Hw,value); if(fansPanel!=null)fansPanel.SetMode(value); }

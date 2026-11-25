@@ -3,5 +3,5 @@ using System.Reflection;
 [assembly: AssemblyProduct("ASUS Utility LITE")]
 [assembly: AssemblyDescription("Compact ASUS laptop cooling, graphics, screen and battery controls")]
 [assembly: AssemblyCompany("TimCodingThings")]
-[assembly: AssemblyVersion("1.2.4.0")]
-[assembly: AssemblyFileVersion("1.2.4.0")]
+[assembly: AssemblyVersion("1.2.5.0")]
+[assembly: AssemblyFileVersion("1.2.5.0")]
