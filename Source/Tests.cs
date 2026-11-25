@@ -67,6 +67,7 @@ static class Tests {
             RememberedState();
             ScrollingFans();
             DriverBuffers();
+            FirmwareDrafts();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
@@ -124,6 +125,41 @@ static class Tests {
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    static void FirmwareDrafts() {
+        byte[][] reported={
+            new byte[]{43,68,70,72,74,76,78,255,1,6,8,13,18,22,32,32},
+            new byte[]{43,67,68,70,70,70,70,255,1,6,8,13,18,22,32,32},
+            new byte[]{43,68,70,72,74,76,78,255,1,1,16,16,28,35,47,47}
+        };
+        using(var hw=new FakeHardware()) {
+            for(int i=0;i<3;i++) {
+                var packet=new byte[64];Buffer.BlockCopy(reported[i],0,packet,0,16);hw.ReadReplies[Id.Curves[i]]=packet;
+            }
+            Assert(LaptopCapabilities.CurveFans(hw,2).SequenceEqual(new[]{0,1,2}),"Captured GA403UP firmware replies enable CPU GPU and Middle fan choices");
+            foreach(var curve in reported) {
+                var original=(byte[])curve.Clone();var draft=AdvancedFansPanel.EditableCurve(curve);FansPanel.ValidateCurve(draft);
+                Assert(curve.SequenceEqual(original)&&draft[7]==100&&draft[15]>=70,"Firmware draft repairs terminal point without changing the original reply");
+            }
+            var gpu=AdvancedFansPanel.EditableCurve(reported[1]);
+            Assert(gpu.Take(8).SequenceEqual(new byte[]{43,67,68,70,71,72,73,100}),"Repeated firmware temperatures become distinct editable draft points");
+            var valid=hw.Read(0,0);
+            Assert(AdvancedFansPanel.EditableCurve(valid).SequenceEqual(valid),"Already editable firmware curves are preserved exactly");
+            var invalid=(byte[])reported[0].Clone();invalid[3]=30;bool rejected=false;
+            try {AdvancedFansPanel.EditableCurve(invalid);}catch(InvalidOperationException){rejected=true;}
+            Assert(rejected,"Descending firmware temperatures are rejected rather than repaired");
+            invalid=(byte[])reported[0].Clone();invalid[12]=1;rejected=false;
+            try {AdvancedFansPanel.EditableCurve(invalid);}catch(InvalidOperationException){rejected=true;}
+            Assert(rejected,"Descending firmware fan speeds remain rejected");
+            invalid=(byte[])reported[0].Clone();invalid[3]=255;rejected=false;
+            try {AdvancedFansPanel.EditableCurve(invalid);}catch(InvalidOperationException){rejected=true;}
+            Assert(rejected,"255 is accepted only at the terminal firmware point");
+            using(var form=new MainForm(hw,new Preferences {LastPerformanceMode=2},true,"AuthenticAMD",1f)) {
+                form.Show();Application.DoEvents();form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
+                var fields=Descendants(form).OfType<NoWheelNumber>().Where(n=>n.Maximum==100).ToArray();
+                Assert(Descendants(form).OfType<ComboBox>().Single().Items.Count==3&&fields.Length==16&&fields.All(n=>n.Enabled)&&Descendants(form).OfType<Label>().Any(l=>l.Text=="Firmware draft adjusted. Review before Apply.")&&hw.Writes==0,"Real firmware defaults open editable fields with an adjusted-draft notice and no hardware writes");
+            }
+        }
     }
     static void DriverBuffers() {
         var capacities=new List<int>();

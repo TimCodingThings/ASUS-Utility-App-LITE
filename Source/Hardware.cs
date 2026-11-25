@@ -66,7 +66,7 @@ public sealed class AsusHardware : IHardware {
         }
     }
     internal static byte[] ReturnedBytes(byte[] output,int returned) {
-        if(returned<4||returned>output.Length)throw new InvalidOperationException("ASUS driver returned an incomplete or invalid response length.");
+        if(returned<4||returned>output.Length)throw new InvalidOperationException("ASUS driver returned "+returned+" bytes for a "+output.Length+"-byte response buffer.");
         var result=new byte[returned];Buffer.BlockCopy(output,0,result,0,returned);return result;
     }
     // Some ASUS endpoints accept DEVS but do not implement DSTS. An unsupported

@@ -1,11 +1,12 @@
-ASUS Utility LITE 1.2.6
+ASUS Utility LITE 1.2.7
 
-- Fixes Advanced failing to open after a fan-curve read reports an insufficient driver response buffer.
-- Read-only ASUS requests grow their response buffer from 16 bytes up to a bounded 4096 bytes when the driver reports insufficient space or partial data. Hardware writes are never automatically retried.
-- Decodes only bytes actually returned by the driver. Valid 16-byte curves may have zero padding; incomplete curves, invalid points, and unexpected extra payload remain rejected.
-- Unavailable optional fan curves and power endpoints do not block the remaining Advanced controls. Access-denied errors remain visible.
-- Includes 123 offline checks, including buffer growth, retry limits, write non-retry, response validation, and Advanced opening when optional reads fail.
+- Reads firmware fan curves separately from validating user-created curves. Real GA403UP defaults include repeated temperatures, a terminal raw value of 255, and low default fan speeds; these no longer disable the editor.
+- Builds an editable draft with distinct temperatures in the 1-100 C range and the existing minimum terminal fan speed. Any changed defaults are labeled Firmware draft adjusted. Review before Apply.
+- Loading a draft does not write hardware. Apply still validates all points before submitting the selected fan curve.
+- Preserves bounded driver read-buffer retries and optional-read fallback from v1.2.6. Hardware writes are never automatically retried.
+- Saves a bounded local Fan curve diagnostics.log to help investigate firmware replies; no logs are uploaded.
+- Includes 133 offline checks, including captured CPU, GPU, and Middle fan replies from the GA403UP.
 
-Retains the fixed-size vertically scrolling window, protected wheel input, saved window placement, remembered performance selection, and approved per-user launcher. Exit the previous tray copy and reopen the installed app to use the update.
+Exit the previous tray copy and reopen the installed app to use this update. Retains the fixed-size scrolling interface, protected wheel input, saved position and performance selection, and approved launcher.
 
-Retains AMD/Intel Zephyrus compatibility, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes still need physical validation. Independent app, not an official ASUS product.
+GPL-3.0; retains the supplied logo and G-Helper attribution. Other laptop models and live hardware writes are not comprehensively validated. Independent app, not an official ASUS product.
