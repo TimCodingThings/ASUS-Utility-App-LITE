@@ -6,6 +6,8 @@
 - Prepare and validate changes, push the feature branch, and open or update its pull request for review without requesting separate push confirmation.
 - The pull request is the approval step. Keep it open for review; do not merge into the default branch, publish release tags, or publish a release without explicit user approval.
 - Do not enable automatic publishing workflows without user authorization.
+- Reuse the owner's saved Windows-account GitHub session with `tools/Use-GitHubSession.ps1` before GitHub CLI operations. It loads a DPAPI-encrypted token from `%USERPROFILE%/Documents/Codex/.private/ASUS Utility LITE/GitHubAuth`, outside the repository. For native Git, pass `-GitArguments @('push', 'origin', '<feature-branch>')` to the same script.
+- The owner requested reusable authentication. Preserve the encrypted cache between pushes; request a device sign-in only if it is missing, cannot be decrypted, or GitHub rejects the credential. After an explicitly authorized new sign-in, save it with `-SaveCurrentLogin`. Never print tokens, commit credentials, or copy the private cache into packages.
 
 ## Version naming
 
