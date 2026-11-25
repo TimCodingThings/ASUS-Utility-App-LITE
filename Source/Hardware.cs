@@ -39,18 +39,35 @@ public sealed class AsusHardware : IHardware {
         if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(),"Cannot open ASUS System Control Interface. Install the ASUS driver and run as administrator.");
     }
     byte[] Call(uint method,uint id,byte[] value) {
-        byte[] input=new byte[12+value.Length], output=new byte[16];
+        byte[] input=new byte[12+value.Length];
         Buffer.BlockCopy(BitConverter.GetBytes(method),0,input,0,4);
         Buffer.BlockCopy(BitConverter.GetBytes(4+value.Length),0,input,4,4);
         Buffer.BlockCopy(BitConverter.GetBytes(id),0,input,8,4);
         Buffer.BlockCopy(value,0,input,12,value.Length);
-        int returned;
-        if(!DeviceIoControl(handle,0x22240C,input,input.Length,output,output.Length,out returned,IntPtr.Zero)) {
-            int error=Marshal.GetLastWin32Error();
-            throw new Win32Exception(error,"ASUS "+(method==0x53545344?"read":"write")+" 0x"+id.ToString("X8")+": "+new Win32Exception(error).Message);
+        return Transfer(method==0x53545344,capacity=> {
+            byte[] output=new byte[capacity];int returned;
+            if(!DeviceIoControl(handle,0x22240C,input,input.Length,output,output.Length,out returned,IntPtr.Zero)) {
+                int error=Marshal.GetLastWin32Error();
+                throw new Win32Exception(error,"ASUS "+(method==0x53545344?"read":"write")+" 0x"+id.ToString("X8")+": "+new Win32Exception(error).Message);
+            }
+            return ReturnedBytes(output,returned);
+        });
+    }
+    internal static byte[] Transfer(bool reading,Func<int,byte[]> exchange) {
+        int capacity=16;
+        while(true) {
+            try {return exchange(capacity);}
+            catch(Win32Exception ex) {
+                // Only read-only requests may be retried. A failed write could
+                // already have taken effect and must never be repeated here.
+                if(!reading||(ex.NativeErrorCode!=122&&ex.NativeErrorCode!=234)||capacity>=4096)throw;
+                capacity*=4;
+            }
         }
-        if(returned<4) throw new InvalidOperationException("ASUS driver returned an incomplete response.");
-        return output;
+    }
+    internal static byte[] ReturnedBytes(byte[] output,int returned) {
+        if(returned<4||returned>output.Length)throw new InvalidOperationException("ASUS driver returned an incomplete or invalid response length.");
+        var result=new byte[returned];Buffer.BlockCopy(output,0,result,0,returned);return result;
     }
     // Some ASUS endpoints accept DEVS but do not implement DSTS. An unsupported
     // read must not abort telemetry or be interpreted as a successful write.

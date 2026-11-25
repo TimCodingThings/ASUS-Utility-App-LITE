@@ -13,8 +13,10 @@ public class FakeHardware : IHardware {
     internal int Writes,ModeReads;
     internal uint? RejectWrite;
     internal HashSet<uint> UnsupportedCurves=new HashSet<uint>();
-    public int Get(uint id) {if(id==Id.Mode)ModeReads++;return Values.ContainsKey(id)?Values[id]:-1;}
-    public byte[] Read(uint id,int argument) {if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
+    internal Dictionary<uint,int> ReadErrors=new Dictionary<uint,int>(),GetErrors=new Dictionary<uint,int>();
+    internal Dictionary<uint,byte[]> ReadReplies=new Dictionary<uint,byte[]>();
+    public int Get(uint id) {if(id==Id.Mode)ModeReads++;if(GetErrors.ContainsKey(id))throw new System.ComponentModel.Win32Exception(GetErrors[id]);return Values.ContainsKey(id)?Values[id]:-1;}
+    public byte[] Read(uint id,int argument) {if(ReadErrors.ContainsKey(id))throw new System.ComponentModel.Win32Exception(ReadErrors[id]);if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);if(ReadReplies.ContainsKey(id))return ReadReplies[id];return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
     public void Set(uint id,byte[] value) {if(RejectWrite==id)throw new InvalidOperationException("Simulated firmware rejection.");Writes++; if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);}
     public void Dispose() {}
 }
@@ -64,6 +66,7 @@ static class Tests {
             Launcher();
             RememberedState();
             ScrollingFans();
+            DriverBuffers();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
@@ -121,6 +124,48 @@ static class Tests {
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    static void DriverBuffers() {
+        var capacities=new List<int>();
+        var packet=AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);if(capacity<64)throw new System.ComponentModel.Win32Exception(122);return BitConverter.GetBytes(65536+41);});
+        Assert(capacities.SequenceEqual(new[]{16,64})&&BitConverter.ToInt32(packet,0)==65577,"ASUS reads retry an insufficient buffer with a larger capacity");
+        capacities.Clear();
+        AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);if(capacity<256)throw new System.ComponentModel.Win32Exception(234);return new byte[16];});
+        Assert(capacities.SequenceEqual(new[]{16,64,256}),"ASUS partial-data reads retry with a bounded larger buffer");
+        capacities.Clear();bool failed=false;
+        try {AsusHardware.Transfer(false,capacity=> {capacities.Add(capacity);throw new System.ComponentModel.Win32Exception(122);});}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==122;}
+        Assert(failed&&capacities.Count==1,"ASUS writes are never retried after a buffer error");
+        capacities.Clear();failed=false;
+        try {AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);throw new System.ComponentModel.Win32Exception(5);});}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==5;}
+        Assert(failed&&capacities.Count==1,"Read permission errors remain visible and are not retried");
+        capacities.Clear();failed=false;
+        try {AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);throw new System.ComponentModel.Win32Exception(122);});}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==122;}
+        Assert(failed&&capacities.SequenceEqual(new[]{16,64,256,1024,4096}),"Read buffer growth stops at 4096 bytes and preserves the driver error");
+        var output=new byte[64];output[0]=7;
+        Assert(AsusHardware.ReturnedBytes(output,4).SequenceEqual(new byte[]{7,0,0,0}),"Only bytes actually returned by the driver are decoded");
+        bool shortRejected=false,overrunRejected=false;
+        try {AsusHardware.ReturnedBytes(output,3);}catch(InvalidOperationException){shortRejected=true;}
+        try {AsusHardware.ReturnedBytes(output,65);}catch(InvalidOperationException){overrunRejected=true;}
+        Assert(shortRejected&&overrunRejected,"Incomplete and out-of-range response lengths are rejected");
+        using(var hw=new FakeHardware()) {
+            var curve=hw.Read(Id.Curves[0],0);var padded=new byte[64];Buffer.BlockCopy(curve,0,padded,0,16);hw.ReadReplies[Id.Curves[0]]=padded;
+            Assert(LaptopCapabilities.ReadFanCurve(hw,Id.Curves[0],0).SequenceEqual(curve),"Fan curve decoding accepts zero padding from a larger driver response");
+            padded[20]=1;failed=false;try {LaptopCapabilities.ReadFanCurve(hw,Id.Curves[0],0);}catch(InvalidOperationException){failed=true;}
+            Assert(failed&&!LaptopCapabilities.CurveFans(hw,0).Contains(0),"Unexpected extra fan payload is rejected without guessing a curve");
+            hw.ReadReplies[Id.Curves[0]]=new byte[12];
+            Assert(!LaptopCapabilities.CurveFans(hw,0).Contains(0),"Short fan responses cannot enable the curve editor");
+            hw.ReadReplies.Clear();hw.ReadErrors[Id.Curves[0]]=122;hw.ReadErrors[Id.Curves[1]]=234;
+            Assert(LaptopCapabilities.CurveFans(hw,0).SequenceEqual(new[]{2}),"A fan read buffer failure preserves other available fan choices");
+            hw.ReadErrors[Id.Curves[2]]=122;hw.GetErrors[Id.Power[1]]=122;
+            Assert(LaptopCapabilities.PowerLimits(hw,"AuthenticAMD").Select(p=>p.Id).SequenceEqual(new[]{Id.Power[0],Id.Power[2]}),"An unavailable optional power read preserves the other power controls");
+            using(var form=new MainForm(hw,new Preferences(),true,"AuthenticAMD",1f)) {
+                form.Show();Application.DoEvents();Size size=form.Size;Point anchor=form.Location;
+                form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
+                Assert(!Descendants(form).OfType<ComboBox>().Single().Enabled&&Descendants(form).OfType<CheckBox>().Count(c=>new[]{"SPL","fPPT"}.Contains(c.Text))==2&&form.Size==size&&form.Location==anchor&&hw.Writes==0,"Advanced opens with available power controls when fan curve reads fail");
+            }
+            hw.ReadErrors[Id.Curves[0]]=5;failed=false;try {LaptopCapabilities.CurveFans(hw,0);}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==5;}
+            Assert(failed,"Fan capability detection does not hide access-denied errors");
+        }
     }
     static void WheelMessage(Control control,int delta) {
         var message=Message.Create(control.Handle,0x20A,new IntPtr((long)(ushort)(short)delta<<16),IntPtr.Zero);

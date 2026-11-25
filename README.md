@@ -35,6 +35,8 @@ The last successfully selected profile stays highlighted after restarting the ap
 
 Advanced offers only fans with valid firmware curves for the selected profile. Two-fan laptops omit Middle. Power controls adapt to modern AMD SPL/sPPT/fPPT, Intel PL1/PL2, or older AMD CPU/total PPT endpoints. The 5–80 W editor range is a conservative app limit, not a detected hardware maximum. GPU modes requiring missing firmware features are disabled; laptops without a MUX can still use Eco/Standard/Optimized when supported.
 
+Read-only ASUS requests retry with larger response buffers when necessary, up to 4096 bytes. Hardware writes are never automatically retried. If an optional curve or power endpoint still cannot be read, Advanced opens with the remaining available controls. Curves must pass validation before editing is enabled.
+
 **Run on startup:** creates an elevated per-user Task Scheduler entry. Turn it off before moving or removing the executable. Settings are stored in `%LOCALAPPDATA%\ASUS Utility LITE\settings.xml`. The renamed app imports the previous Lite settings and startup entry on first launch.
 
 **One-time launch approval:** works independently of Run on startup, stores no password, and leaves UAC enabled. Reopening the executable brings the existing window forward. Keep the executable in the same permanent location; moving it, deleting/disabling its launch task, or a policy blocking Task Scheduler can require approval again. It requires an administrator account; entering another account's administrator credentials from a standard account does not enable prompt-free launches for the standard account. Explicitly choosing Windows' **Run as administrator** and running the separate Diagnostics command still use normal Windows elevation. To revoke the approved launcher, delete `ASUS Utility LITE Launch-<your user SID>` in Task Scheduler. The logon-startup task has a separate name.
@@ -52,13 +54,13 @@ Run these in PowerShell from the repository directory:
 .\Test.ps1
 ```
 
-The build uses Windows' .NET Framework C# compiler and standard framework assemblies. No SDK or NuGet restore is required. `Source/` contains the full source, manifest, and embedded icon. The 109 offline checks use simulated hardware and do not change real laptop settings. Compatibility checks cover AMD/Intel power layouts, missing GPU/MUX controls, two-fan and sparse fan configurations, and layouts at 100%, 150%, and 200% DPI.
+The build uses Windows' .NET Framework C# compiler and standard framework assemblies. No SDK or NuGet restore is required. `Source/` contains the full source, manifest, and embedded icon. The 123 offline checks use simulated hardware and do not change real laptop settings. Compatibility checks cover AMD/Intel power layouts, missing GPU/MUX controls, two-fan and sparse fan configurations, and layouts at 100%, 150%, and 200% DPI.
 
 A Windows GitHub Actions release workflow is provided in `docs/release-workflow.yml`. To enable it, place it at `.github/workflows/release.yml` using a GitHub account/token with workflow-write permission. The initial public release is built and tested locally. Change `VERSION` and the assembly version before publishing another release; the workflow does not overwrite existing releases.
 
 ## Validation
 
-The app builds successfully, the 109 offline checks pass, and the window layouts have been visually inspected. ASUS ACPI diagnostics and an NVIDIA temperature read were obtained on the GA403UP development laptop. Live writes for performance, fan curves, power limits, charging limits, GPU routing/restarts, scheduled startup, and suspend/resume have not all been independently verified. Other Zephyrus models have simulated compatibility coverage, not physical validation; no claim is made that every feature works on every model.
+The app builds successfully, the 123 offline checks pass, and the window layouts have been visually inspected. ASUS ACPI diagnostics and an NVIDIA temperature read were obtained on the GA403UP development laptop. Live writes for performance, fan curves, power limits, charging limits, GPU routing/restarts, scheduled startup, and suspend/resume have not all been independently verified. Other Zephyrus models have simulated compatibility coverage, not physical validation; no claim is made that every feature works on every model.
 
 The executable is unsigned. CPU and memory use have not been benchmarked against G-Helper. The app makes no network requests and uses the installed ASUS/NVIDIA drivers rather than installing its own driver.
 

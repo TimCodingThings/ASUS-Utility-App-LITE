@@ -73,8 +73,7 @@ public class AdvancedFansPanel : UserControl {
         try {
             if(mode<0)throw new InvalidOperationException("Select a performance mode first.");
             if(fan.SelectedIndex<0)throw new InvalidOperationException("Fan curves unavailable.");
-            byte[] curve=main.Hw.Read(Id.Curves[curveFans[fan.SelectedIndex]],mode==1?2:mode==2?1:0);
-            ValidateCurve(curve);
+            byte[] curve=LaptopCapabilities.ReadFanCurve(main.Hw,Id.Curves[curveFans[fan.SelectedIndex]],mode);
             for(int i=0;i<8;i++) { temps[i].Value=curve[i]; speeds[i].Value=curve[i+8]; }
             curveAvailable=true; result.Text="Firmware curve loaded. Edit then apply.";
         } catch { result.Text=mode<0?"Select a performance mode first.":"No valid firmware curve available for this fan/profile."; }

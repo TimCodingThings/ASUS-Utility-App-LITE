@@ -1,12 +1,11 @@
-ASUS Utility LITE 1.2.5
+ASUS Utility LITE 1.2.6
 
-- Keeps the original main window size and location when opening Fans + Power, Advanced, and Back.
-- Places cooling controls below the main controls inside a vertically scrolling view; horizontal scrolling is not used.
-- Opening cooling reveals its controls; closing it returns to the top and hides the vertical scrollbar.
-- Mouse-wheel input over the charge slider, numeric editors, and fan selection scrolls the page without changing their values.
-- Keyboard focus reveals off-screen controls automatically.
-- Includes 109 offline checks, including scrolling, protected wheel input, unchanged window bounds, and layouts at 100%, 150%, and 200% DPI.
+- Fixes Advanced failing to open after a fan-curve read reports an insufficient driver response buffer.
+- Read-only ASUS requests grow their response buffer from 16 bytes up to a bounded 4096 bytes when the driver reports insufficient space or partial data. Hardware writes are never automatically retried.
+- Decodes only bytes actually returned by the driver. Valid 16-byte curves may have zero padding; incomplete curves, invalid points, and unexpected extra payload remain rejected.
+- Unavailable optional fan curves and power endpoints do not block the remaining Advanced controls. Access-denied errors remain visible.
+- Includes 123 offline checks, including buffer growth, retry limits, write non-retry, response validation, and Advanced opening when optional reads fail.
 
-Exit the previous running copy from the system tray and reopen the installed executable to use this update. Retains saved window placement, remembered performance selection, and the approved per-user launcher.
+Retains the fixed-size vertically scrolling window, protected wheel input, saved window placement, remembered performance selection, and approved per-user launcher. Exit the previous tray copy and reopen the installed app to use the update.
 
 Retains AMD/Intel Zephyrus compatibility, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes still need physical validation. Independent app, not an official ASUS product.
