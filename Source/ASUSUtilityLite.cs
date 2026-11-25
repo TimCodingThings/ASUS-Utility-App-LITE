@@ -14,6 +14,17 @@ public class Preferences {
     public bool Optimized, AutoScreen;
     public int ChargeLimit=80;
     public bool ChargeConfigured;
+    public int LastPerformanceMode=-1;
+    public bool WindowPositionSaved;
+    public int WindowX,WindowY;
+    internal void SelectPerformanceMode(IHardware hardware,int value) {
+        if(value<0||value>2)throw new ArgumentOutOfRangeException("value");
+        hardware.Write(Id.Mode,value);
+        LastPerformanceMode=value;Save();
+    }
+    internal void RememberWindow(Point location) {
+        WindowX=location.X;WindowY=location.Y;WindowPositionSaved=true;Save();
+    }
     public static string Folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ASUS Utility LITE");
     public static Preferences Load() {
         try {
@@ -170,7 +181,8 @@ public class MainForm : Form {
     readonly BatteryTelemetry batteryTelemetry=new BatteryTelemetry();
     readonly Label batteryPower=new Label(),batteryTime=new Label();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
-    NotifyIcon tray; bool quitting,initializing=true,paused; int mode=-1,lastPower=-1; string panel;
+    NotifyIcon tray; bool quitting,initializing=true,paused; int lastPower=-1; string panel;
+    int mode {get {return prefs.LastPerformanceMode>=0&&prefs.LastPerformanceMode<=2?prefs.LastPerformanceMode:preview?1:-1;}}
     public MainForm(IHardware hardware,Preferences settings,bool demo,string cpuVendor=null,float previewScale=0) {
         SuspendLayout();
         Hw=hardware; prefs=settings; preview=demo; CpuVendor=cpuVendor??LaptopCapabilities.CpuVendor;
@@ -223,12 +235,22 @@ public class MainForm : Form {
             if(preview&&previewScale>0)ScalePreviewFonts(this,UiScale/nativeScale);
         }
         Scale(new SizeF(UiScale,UiScale));
-        if(preview)mode=1;
         initializing=false; RefreshState();
         timer.Interval=3000; timer.Tick+=(s,e)=> { timer.Interval=Visible?3000:30000; RefreshState(); }; if(!preview)timer.Start();
         SystemEvents.PowerModeChanged+=OnPower;
+        if(prefs.WindowPositionSaved) {
+            StartPosition=FormStartPosition.Manual;
+            Load+=(s,e)=>Location=WindowPlacement.Restore(new Point(prefs.WindowX,prefs.WindowY),Size,Screen.AllScreens.Select(screen=>screen.WorkingArea).ToArray());
+        }
+        ResizeEnd+=(s,e)=>SaveWindowPosition();
         Shown+=(s,e)=> { if(!preview) Run(()=> { Guard(); if(prefs.ChargeConfigured) Hw.Write(Id.Battery,prefs.ChargeLimit); ApplyAutomatic(); }); };
-        FormClosing+=(s,e)=> { if(!quitting&&!preview&&e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; Hide(); timer.Interval=30000; } };
+        FormClosing+=(s,e)=> {SaveWindowPosition(); if(!quitting&&!preview&&e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; Hide(); timer.Interval=30000; } };
+    }
+    void SaveWindowPosition() {
+        if(preview||initializing||!IsHandleCreated)return;
+        Point location=WindowState==FormWindowState.Normal?Location:RestoreBounds.Location;
+        try {prefs.RememberWindow(location);}
+        catch(Exception ex) {status.Text="Could not save window position: "+ex.Message;}
     }
     Label LabelAt(string text,int x,int y,int w,int h) { var l=new Label(); AddLabel(l,text,x,y,w,h); return l; }
     static void ScalePreviewFonts(Control control,float ratio) {
@@ -266,7 +288,7 @@ public class MainForm : Form {
             paused=!preview&&OtherHelper();
             // DSTS is not a reliable current-profile readback (this laptop
             // returns 3). Only display a profile selected successfully in Lite.
-            string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Set: "+names[mode]:"Select a mode";
+            string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Last set: "+names[mode]:"Select a mode";
             for(int i=0;i<3;i++) Select(modeButtons[i],mode==(i==0?2:i==1?0:1));
             cpu.Text="CPU "+Temperature(Hw.Get(Id.CpuTemp))+" · Fan "+Fan(Hw.Get(Id.Fans[0]));
             int gpuTemperature=Hw.Get(Id.GpuTemp);
@@ -286,8 +308,8 @@ public class MainForm : Form {
             // firmware has no readable charge-limit endpoint.
             limit.Enabled=!paused;
             // DSTS for performance mode is absent on some ROG firmware even
-            // though DEVS supports changing the profile. Show selection only
-            // after a readable state or a successful user-initiated write.
+            // though DEVS supports changing the profile. Display the last
+            // successful selection saved by Lite, not ambiguous DSTS data.
             foreach(var b in modeButtons)b.Enabled=!paused;
             if(preview)status.Text="Preview · sample readings · hardware changes disabled";
             else if(paused)status.Text="Paused — exit G-Helper to enable controls";
@@ -314,7 +336,7 @@ public class MainForm : Form {
         ClientSize=new Size((int)((expanded?810:414)*UiScale),contentHeight);
         Location=anchor;
     }
-    internal void ChangeMode(int value) { Guard(); Hw.Write(Id.Mode,value); mode=value; if(fansPanel!=null)fansPanel.SetMode(value); }
+    internal void ChangeMode(int value) { Guard(); prefs.SelectPerformanceMode(Hw,value); if(fansPanel!=null)fansPanel.SetMode(value); }
     void ApplyLimit() { Run(()=> { Guard(); Hw.Write(Id.Battery,limit.Value); prefs.ChargeLimit=limit.Value; prefs.ChargeConfigured=true; prefs.Save(); }); }
     void ChangeGpu(int target) {
         Guard(); int mux=Hw.Get(Id.Mux),eco=Hw.Get(Id.Eco);

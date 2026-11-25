@@ -3,9 +3,8 @@
 ## GitHub approval and pull requests
 
 - Develop changes on a local feature branch. Keep updates as pull requests for review; do not push directly to the default branch.
-- Prepare the changes, validation results, and proposed pull request before requesting approval.
-- Ask the user for explicit confirmation before pushing updates to GitHub, including commits or tags. Do not infer push approval from a request to develop or fix the app.
-- After push approval, push the feature branch and open the pull request. Keep it open for review; do not merge or publish a release without explicit authorization.
+- Prepare and validate changes, push the feature branch, and open or update its pull request for review without requesting separate push confirmation.
+- The pull request is the approval step. Keep it open for review; do not merge into the default branch, publish release tags, or publish a release without explicit user approval.
 - Do not enable automatic publishing workflows without user authorization.
 
 ## Version naming
