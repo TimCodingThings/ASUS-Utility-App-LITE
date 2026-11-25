@@ -11,10 +11,11 @@ public class FakeHardware : IHardware {
         {Id.Fans[0],38},{Id.Fans[1],41},{Id.Fans[2],51},{Id.Power[0],35},{Id.Power[1],45},{Id.Power[2],65}
     };
     internal int Writes,ModeReads;
+    internal uint? RejectWrite;
     internal HashSet<uint> UnsupportedCurves=new HashSet<uint>();
     public int Get(uint id) {if(id==Id.Mode)ModeReads++;return Values.ContainsKey(id)?Values[id]:-1;}
     public byte[] Read(uint id,int argument) {if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
-    public void Set(uint id,byte[] value) {Writes++; if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);}
+    public void Set(uint id,byte[] value) {if(RejectWrite==id)throw new InvalidOperationException("Simulated firmware rejection.");Writes++; if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);}
     public void Dispose() {}
 }
 static class Tests {
@@ -61,6 +62,7 @@ static class Tests {
             Assert(System.Runtime.InteropServices.Marshal.SizeOf(typeof(Display.Mode))==220,"Win32 Unicode DEVMODE layout");
             Compatibility();
             Launcher();
+            RememberedState();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
@@ -117,6 +119,54 @@ static class Tests {
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    static void RememberedState() {
+        var primary=new Rectangle(0,0,1920,1040);var left=new Rectangle(-1920,0,1920,1040);var window=new Size(828,930);
+        Assert(WindowPlacement.Restore(new Point(200,70),window,new[]{primary})==new Point(200,70),"Saved window location is unchanged when it fits");
+        Assert(WindowPlacement.Restore(new Point(-1700,50),window,new[]{left,primary})==new Point(-1700,50),"Window location supports a monitor left of the primary screen");
+        var recovered=WindowPlacement.Restore(new Point(2500,100),window,new[]{primary});
+        Assert(primary.Contains(new Rectangle(recovered,window)),"Disconnected monitor placement is recovered onto an available screen");
+        Assert(WindowPlacement.Restore(new Point(1800,1000),new Size(2500,1500),new[]{primary})==primary.Location,"Oversized window restores with its title bar visible");
+        Assert(primary.Contains(new Rectangle(WindowPlacement.Restore(new Point(int.MaxValue,int.MinValue),window,new[]{primary}),window)),"Extreme saved coordinates cannot overflow screen recovery");
+        string old=Preferences.Folder;
+        Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-window-settings");
+        try {
+            Directory.CreateDirectory(Preferences.Folder);
+            File.WriteAllText(Path.Combine(Preferences.Folder,"settings.xml"),"<Preferences><ChargeLimit>75</ChargeLimit></Preferences>");
+            var migrated=Preferences.Load();
+            Assert(migrated.LastPerformanceMode==-1&&!migrated.WindowPositionSaved&&migrated.ChargeLimit==75,"Existing settings load without inventing a saved mode or position");
+            using(var hw=new FakeHardware()) {
+                foreach(int value in new[]{0,1,2}) {
+                    var prefs=new Preferences();prefs.SelectPerformanceMode(hw,value);
+                    var loaded=Preferences.Load();hw.Writes=0;hw.ModeReads=0;
+                    using(var form=new MainForm(hw,loaded,true,null,1f)) {
+                        form.Show();Application.DoEvents();
+                        string expected=new[]{"Balanced","Turbo","Silent"}[value];
+                        var modes=Descendants(form).OfType<Button>().Where(b=>new[]{"Silent","Balanced","Turbo"}.Contains(b.Text)).ToArray();
+                        Assert(loaded.LastPerformanceMode==value&&modes.Count(b=>b.FlatAppearance.BorderSize==2)==1&&modes.Single(b=>b.FlatAppearance.BorderSize==2).Text==expected&&hw.Writes==0&&hw.ModeReads==0,"Reopened "+expected+" selection persists without a firmware read or write");
+                    }
+                }
+                var previous=Preferences.Load();hw.RejectWrite=Id.Mode;bool rejected=false;
+                try {previous.SelectPerformanceMode(hw,0);}catch(InvalidOperationException){rejected=true;}
+                Assert(rejected&&previous.LastPerformanceMode==2&&Preferences.Load().LastPerformanceMode==2,"Rejected mode change preserves the last successful selection on disk");
+                hw.RejectWrite=null;
+                var area=Screen.PrimaryScreen.WorkingArea;Point saved=new Point(area.Left+30,area.Top+30);
+                previous.RememberWindow(saved);var restored=Preferences.Load();
+                Assert(restored.WindowPositionSaved&&new Point(restored.WindowX,restored.WindowY)==saved,"Window coordinates survive an atomic settings reload");
+                using(var form=new MainForm(hw,restored,true,null,1f)) {
+                    form.Show();Application.DoEvents();Point expected=WindowPlacement.Restore(saved,form.Size,Screen.AllScreens.Select(s=>s.WorkingArea).ToArray());
+                    Assert(form.StartPosition==FormStartPosition.Manual&&form.Location==expected,"New window restores its saved location after DPI scaling");
+                    form.ToggleFans();form.fansPanel.ToggleAdvanced();form.fansPanel.ToggleAdvanced();form.ToggleFans();
+                    Assert(form.Location==expected&&!form.AutoScroll,"Restored location is preserved through cooling panel changes");
+                    form.Location=new Point(expected.X+10,expected.Y+10);form.Close();
+                }
+                var afterPreview=Preferences.Load();
+                Assert(new Point(afterPreview.WindowX,afterPreview.WindowY)==saved,"Preview closing never overwrites real saved window coordinates");
+            }
+        } finally {
+            string path=Path.Combine(Preferences.Folder,"settings.xml");if(File.Exists(path))File.Delete(path);
+            if(Directory.Exists(Preferences.Folder))Directory.Delete(Preferences.Folder);Preferences.Folder=old;
+        }
     }
     sealed class ActivationForm : MainForm {
         internal ActivationForm(IHardware hw):base(hw,new Preferences(),true) {}

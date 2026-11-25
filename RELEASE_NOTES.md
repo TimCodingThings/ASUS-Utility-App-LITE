@@ -1,10 +1,11 @@
-ASUS Utility LITE 1.2.3
+ASUS Utility LITE 1.2.4
 
-- Makes approved-launcher validation accept equivalent Task Scheduler XML: omitted default-enabled settings, boolean lexical forms, zero-duration formats, and account names resolving to the expected user SID.
-- Keeps checks for the fixed executable, arguments, directory, elevated user, on-demand behavior, and battery operation.
-- Reports the exact validation mismatch and records the returned task XML in Launcher setup.log when registration readback fails.
-- Includes 74 offline checks, including first-time setup and normalized task exports.
+- Remembers the window position after a drag, closing to the tray, and exiting; restores it on the next launch.
+- Recovers saved positions onto an available screen when a monitor has been disconnected, preserving negative coordinates for monitors left of the primary display.
+- Remembers the last successfully selected Silent, Balanced, or Turbo profile across app restarts. The selected button is highlighted and labeled Last set.
+- Failed firmware writes do not replace the remembered profile. Restoring the highlight does not read ambiguous ASUS profile data or automatically reapply the profile.
+- Includes 88 offline checks covering saved settings, window recovery, profile selection, compatibility, launcher validation, and DPI layouts.
 
-The existing approved launch task can be reused when valid; reinstalling it is not necessary just because a previous app reported a readback error. Normal prompt-free launch still depends on Windows Task Scheduler access for the current administrator account.
+After updating, exit the previous running copy from the system tray and reopen the installed executable. Select a performance mode once to establish the saved selection. Existing settings are imported without inventing a previous mode or position.
 
-Retains AMD/Intel Zephyrus compatibility, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes still need physical validation. Independent app, not an official ASUS product.
+Retains the approved per-user launcher, AMD/Intel Zephyrus compatibility, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes still need physical validation. Independent app, not an official ASUS product.
