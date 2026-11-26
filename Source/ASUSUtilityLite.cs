@@ -186,6 +186,7 @@ public class MainForm : Form {
     readonly Label batteryPower=new Label(),batteryTime=new Label();
     readonly Label profileFeedback=new Label();
     readonly ProfileCommandFeedback profileCommand=new ProfileCommandFeedback();
+    readonly ProfileDiagnostics profileDiagnostics;
     readonly ToolTip profileHelp=new ToolTip();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
     internal readonly VerticalScrollPanel contentHost=new VerticalScrollPanel();
@@ -193,7 +194,7 @@ public class MainForm : Form {
     int mode {get {return prefs.LastPerformanceMode>=0&&prefs.LastPerformanceMode<=2?prefs.LastPerformanceMode:preview?1:-1;}}
     public MainForm(IHardware hardware,Preferences settings,bool demo,string cpuVendor=null,float previewScale=0) {
         SuspendLayout();
-        Hw=hardware; prefs=settings; preview=demo; CpuVendor=cpuVendor??LaptopCapabilities.CpuVendor;
+        Hw=hardware; prefs=settings; preview=demo; profileDiagnostics=new ProfileDiagnostics(hardware); CpuVendor=cpuVendor??LaptopCapabilities.CpuVendor;
         Text="ASUS Utility LITE"; ClientSize=new Size(414,390); FormBorderStyle=FormBorderStyle.FixedSingle; AutoScroll=false;
         MaximizeBox=false; StartPosition=FormStartPosition.CenterScreen; BackColor=Color.FromArgb(27,29,32); ForeColor=Color.WhiteSmoke;
         Font=new Font("Segoe UI",9); AutoScaleMode=AutoScaleMode.None; Icon=LoadAppIcon();
@@ -351,8 +352,9 @@ public class MainForm : Form {
     }
     internal void ChangeMode(int value) {
         Guard();bool accepted=false;
-        try {prefs.SelectPerformanceMode(Hw,value,()=> {accepted=true;sessionOverrides.Clear();profileCommand.Complete(value,true,DateTime.Now);profileFeedback.Text=profileCommand.Text;});}
-        catch {if(!accepted){profileCommand.Complete(value,false,DateTime.Now);profileFeedback.Text=profileCommand.Text;}throw;}
+        if(!preview)profileDiagnostics.Begin(value,"manual");
+        try {prefs.SelectPerformanceMode(Hw,value,()=> {accepted=true;profileDiagnostics.Complete(true);sessionOverrides.Clear();profileCommand.Complete(value,true,DateTime.Now);profileFeedback.Text=profileCommand.Text;});}
+        catch {if(!accepted){profileDiagnostics.Complete(false);profileCommand.Complete(value,false,DateTime.Now);profileFeedback.Text=profileCommand.Text;}throw;}
         if(fansPanel!=null)fansPanel.SetMode(value);
     }
     internal void ApplyFanCurve(uint id,byte[] curve) {Guard();sessionOverrides.ApplyCurve(Hw,id,curve);}
@@ -404,7 +406,7 @@ public class MainForm : Form {
         if(powerTransitions.Observe(power)) {powerTimer.Start();return;}
         string[] errors;
         bool? profileAccepted=null;
-        try {Guard();errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileAccepted=accepted;profileCommand.Complete(prefs.LastPerformanceMode,accepted,DateTime.Now);});}
+        try {Guard();if(mode>=0)profileDiagnostics.Begin(mode,"power transition");errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileAccepted=accepted;profileDiagnostics.Complete(accepted);profileCommand.Complete(prefs.LastPerformanceMode,accepted,DateTime.Now);});}
         catch(Exception ex) {profileCommand.NotSent();errors=new[]{ex.Message};}
         profileFeedback.Text=profileCommand.Text;
         status.Text=errors.Length==0?"Power change handled — "+(power==PowerLineStatus.Online?"AC":"battery"):"Power-change command failed; see Power restore.log";
@@ -429,6 +431,6 @@ public class MainForm : Form {
         }
         base.WndProc(ref message);
     }
-    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose();powerTimer.Dispose();profileHelp.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose();powerTimer.Dispose();profileDiagnostics.Dispose();profileHelp.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
 }
 }
