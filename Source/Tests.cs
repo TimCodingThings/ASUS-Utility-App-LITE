@@ -12,10 +12,18 @@ public class FakeHardware : IHardware {
     };
     internal int Writes,ModeReads;
     internal uint? RejectWrite;
+    internal bool ResetOverridesOnMode;
+    internal List<uint> WriteIds=new List<uint>();
     internal HashSet<uint> UnsupportedCurves=new HashSet<uint>();
-    public int Get(uint id) {if(id==Id.Mode)ModeReads++;return Values.ContainsKey(id)?Values[id]:-1;}
-    public byte[] Read(uint id,int argument) {if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
-    public void Set(uint id,byte[] value) {if(RejectWrite==id)throw new InvalidOperationException("Simulated firmware rejection.");Writes++; if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);}
+    internal Dictionary<uint,int> ReadErrors=new Dictionary<uint,int>(),GetErrors=new Dictionary<uint,int>();
+    internal Dictionary<uint,byte[]> ReadReplies=new Dictionary<uint,byte[]>();
+    public int Get(uint id) {if(id==Id.Mode)ModeReads++;if(GetErrors.ContainsKey(id))throw new System.ComponentModel.Win32Exception(GetErrors[id]);return Values.ContainsKey(id)?Values[id]:-1;}
+    public byte[] Read(uint id,int argument) {if(ReadErrors.ContainsKey(id))throw new System.ComponentModel.Win32Exception(ReadErrors[id]);if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);if(ReadReplies.ContainsKey(id))return ReadReplies[id];return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
+    public void Set(uint id,byte[] value) {
+        if(RejectWrite==id)throw new InvalidOperationException("Simulated firmware rejection.");Writes++;WriteIds.Add(id);
+        if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);else if(Id.Curves.Contains(id))ReadReplies[id]=(byte[])value.Clone();
+        if(id==Id.Mode&&ResetOverridesOnMode) {foreach(uint curve in Id.Curves)ReadReplies.Remove(curve);foreach(uint power in Id.Power)Values[power]=35;}
+    }
     public void Dispose() {}
 }
 static class Tests {
@@ -63,10 +71,16 @@ static class Tests {
             Compatibility();
             Launcher();
             RememberedState();
+            ScrollingFans();
+            DriverBuffers();
+            FirmwareDrafts();
+            PowerChanges();
+            ProfileFeedback();
+            ProfileServiceControl();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
-            var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
-            var read=Preferences.Load();Assert(read.Optimized&&read.AutoScreen&&read.ChargeConfigured&&read.ChargeLimit==80,"Atomic settings round trip");
+            var prefs=new Preferences {Optimized=true,AutoScreen=true,ControlProfiles=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
+            var read=Preferences.Load();Assert(read.Optimized&&read.AutoScreen&&read.ControlProfiles&&read.ChargeConfigured&&read.ChargeLimit==80,"Atomic settings round trip");
             File.Delete(Path.Combine(Preferences.Folder,"settings.xml"));Directory.Delete(Preferences.Folder);Preferences.Folder=old;
         } catch(Exception ex) {Console.WriteLine("FAIL "+ex);Environment.ExitCode=1;}
     }
@@ -112,13 +126,253 @@ static class Tests {
                 form.Show();Application.DoEvents();form.Location=new Point(0,0);Point anchor=form.Location;
                 form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
                 var choice=Descendants(form).OfType<ComboBox>().Single();
-                bool fits=Descendants(form).Where(c=>c.Visible).All(c=>c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1);
+                bool fits=Descendants(form).Where(c=>c.Visible&&c!=form.contentHost.Content).All(c=>c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1);
+                if(!fits)foreach(var c in Descendants(form).Where(c=>c.Visible&&c!=form.contentHost.Content&&!(c.Left>=0&&c.Top>=0&&c.Right<=c.Parent.ClientSize.Width+1&&c.Bottom<=c.Parent.ClientSize.Height+1)))Console.WriteLine("Layout overflow: "+c.GetType().Name+" "+c.Text+" "+c.Bounds+" parent="+c.Parent.ClientSize);
                 Assert(fits&&choice.SelectedIndex==0&&choice.Text=="CPU"&&form.Location==anchor&&!form.AutoScroll,"Advanced "+vendor+" layout and selected fan at "+(scale*100)+"% DPI");
             }
         }
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    sealed class FakeProfileServices : IProfileServices {
+        internal readonly Dictionary<string,bool> States=ProfileControl.Names.ToDictionary(name=>name,name=>false);
+        internal readonly List<string> Calls=new List<string>();
+        internal string FailStop,FailStart;
+        public bool Running(string name) {return States[name];}
+        public void Stop(string name) {Calls.Add("stop "+name);if(name==FailStop)throw new InvalidOperationException("stop refused");States[name]=false;}
+        public void Start(string name) {Calls.Add("start "+name);if(name==FailStart)throw new InvalidOperationException("start refused");States[name]=true;}
+    }
+    static void ProfileServiceControl() {
+        string folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-profile-control-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+        string path=Path.Combine(folder,"services.txt");string first=ProfileControl.Names[0],second=ProfileControl.Names[1];
+        try {
+            var services=new FakeProfileServices();services.States[first]=true;
+            var control=new ProfileControl(services,path);
+            Assert(control.Conflict()==true,"Running Armoury Crate services are detected without changing them");
+            control.Acquire();
+            Assert(!services.States[first]&&!services.States[second]&&File.ReadAllLines(path).SequenceEqual(new[]{first}),"Taking control records and stops only originally running targeted services");
+            control.Release();
+            Assert(services.States[first]&&!services.States[second]&&File.ReadAllLines(path).Length==0,"Releasing control preserves services the user had already stopped");
+            control.Acquire();services.Calls.Clear();
+            new ProfileControl(services,path).Release();
+            Assert(services.Calls.SequenceEqual(new[]{"start "+first})&&services.States[first],"A fresh process can restore services from the interrupted-session journal");
+            File.WriteAllLines(path,new[]{"UnrelatedService",first});services.States[first]=false;services.Calls.Clear();
+            new ProfileControl(services,path).Release();
+            Assert(services.Calls.SequenceEqual(new[]{"start "+first}),"Recovery ignores service names outside the explicit Armoury Crate allowlist");
+            services.States[first]=true;services.States[second]=true;services.FailStop=second;services.Calls.Clear();
+            control=new ProfileControl(services,path);bool failed=false;
+            try {control.Acquire();}catch(InvalidOperationException) {failed=true;}
+            Assert(failed&&services.States[first]&&services.States[second]&&File.ReadAllLines(path).Length==0,"A partial takeover failure rolls back services already stopped");
+            services.FailStop=null;control.Acquire();services.FailStart=second;failed=false;
+            try {control.Release();}catch(InvalidOperationException) {failed=true;}
+            Assert(failed&&services.States[first]&&!services.States[second]&&File.ReadAllLines(path).SequenceEqual(new[]{second}),"A restoration failure retains recovery state while restoring other services");
+            services.FailStart=null;new ProfileControl(services,path).Release();
+            Assert(services.States[second]&&File.ReadAllLines(path).Length==0,"Failed restoration can be retried in a later process");
+            Assert(ProfileControl.Conflict(name=> {if(name==first)throw new UnauthorizedAccessException();return true;})==true,"A failed service query cannot hide another confirmed running controller");
+            Assert(ProfileControl.Conflict(name=> {throw new UnauthorizedAccessException();})==null,"Service access errors are reported as unknown rather than no conflict");
+            Assert(ProfileControl.Conflict(name=>false)==false,"Stopped or absent Armoury Crate services clear the conflict");
+            foreach(float scale in new[]{1f,1.5f,2f})using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences(),true,"AuthenticAMD",scale)) {
+                form.Show();Application.DoEvents();
+                var conflict=typeof(MainForm).GetField("armouryConflict",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic);
+                conflict.SetValue(form,true);
+                typeof(MainForm).GetMethod("UpdateProfileFeedback",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).Invoke(form,null);
+                var row=Descendants(form).OfType<Label>().Single(label=>label.Text.Contains("Armoury Crate conflict"));
+                Size measured=TextRenderer.MeasureText(row.Text,row.Font);
+                Assert(measured.Width<=row.Width&&measured.Height<=row.Height&&hw.Writes==0,"Conflict warning fits and preview never controls services at "+scale*100+"% DPI");
+            }
+        }finally {Directory.Delete(folder,true);}
+    }
+    static void ProfileFeedback() {
+        var feedback=new ProfileCommandFeedback();var time=new DateTime(2026,11,25,12,34,56);
+        Assert(feedback.Text.Contains("Actual mode unavailable")&&feedback.Text.Contains("no command sent"),"Saved selection does not imply a command was sent in the new process");
+        feedback.Complete(2,true,time);
+        Assert(feedback.Text.Contains("Silent command accepted 12:34:56")&&feedback.Text.Contains("Actual mode unavailable"),"Acknowledged profile command retains explicit unverified hardware status");
+        feedback.Pending(PowerLineStatus.Online);
+        Assert(feedback.Text.Contains("AC change; restore pending")&&!feedback.Text.Contains("accepted"),"AC change immediately replaces stale acknowledgement with pending status");
+        feedback.Pending(PowerLineStatus.Offline);
+        Assert(feedback.Text.Contains("battery change; restore pending"),"Unplugging exposes a separate battery restore event");
+        feedback.Complete(0,false,time);
+        Assert(feedback.Text.Contains("Balanced command failed 12:34:56")&&!feedback.Text.Contains("accepted"),"Failed profile command is never presented as accepted");
+        feedback.NotSent();Assert(feedback.Text.Contains("not sent")&&!feedback.Text.Contains("pending"),"Blocked restore does not leave a permanent pending acknowledgement");
+        using(var hw=new FakeHardware()) {
+            var prefs=new Preferences {LastPerformanceMode=2};bool? accepted=null;
+            var errors=PowerRestore.Apply(hw,prefs,new SessionOverrides(),()=> {throw new InvalidOperationException("Screen failed.");},value=>accepted=value);
+            Assert(accepted==true&&errors.Length==1,"Profile acknowledgement is separate from unrelated automatic-setting failures");
+            hw.RejectWrite=Id.Mode;accepted=null;
+            errors=PowerRestore.Apply(hw,prefs,new SessionOverrides(),()=>{},value=>accepted=value);
+            Assert(accepted==false&&errors.Length==1,"Rejected hardware write reports a failed profile acknowledgement");
+            hw.RejectWrite=null;accepted=null;
+            PowerRestore.Apply(hw,new Preferences(),new SessionOverrides(),()=>{},value=>accepted=value);
+            Assert(!accepted.HasValue,"An absent profile selection cannot produce a profile-write acknowledgement");
+        }
+        foreach(float scale in new[]{1f,1.5f,2f})using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences {LastPerformanceMode=0},true,"AuthenticAMD",scale)) {
+            form.Show();Application.DoEvents();
+            var row=Descendants(form).OfType<Label>().Single(l=>l.Text.StartsWith("Actual mode unavailable"));
+            var header=Descendants(form).OfType<Label>().Single(l=>l.Text=="Selected: Balanced");
+            feedback.Complete(0,true,time);Size measured=TextRenderer.MeasureText(feedback.Text,row.Font);
+            var slider=Descendants(form).OfType<PointerTrackBar>().Single();
+            var startup=Descendants(form).OfType<CheckBox>().Single(c=>c.Text=="Run on startup");
+            Assert(measured.Width<=row.Width&&measured.Height<=row.Height&&row.Bottom<Descendants(form).OfType<Label>().Single(l=>l.Text.StartsWith("GPU:")).Top&&!slider.Bounds.IntersectsWith(startup.Bounds)&&hw.Writes==0&&hw.ModeReads==0,"Selected mode and unverified acknowledgement fit without overlap at "+(scale*100)+"% DPI");
+        }
+    }
+    static void PowerChanges() {
+        var changes=new PowerTransitions();
+        Assert(!changes.Observe(PowerLineStatus.Unknown)&&!changes.Observe(PowerLineStatus.Online),"Initial power reading establishes a baseline without restoring a profile");
+        Assert(!changes.Observe(PowerLineStatus.Online)&&!changes.Observe(PowerLineStatus.Online),"Repeated battery status notifications do not schedule profile writes");
+        Assert(changes.Observe(PowerLineStatus.Offline)&&!changes.Observe(PowerLineStatus.Offline),"Unplugging schedules one restore rather than one per notification");
+        Assert(!changes.Observe(PowerLineStatus.Unknown)&&changes.Observe(PowerLineStatus.Online),"Unknown power readings preserve the last known source");
+        Assert(changes.Observe(PowerLineStatus.Online,true)&&!changes.Observe(PowerLineStatus.Online),"Resume schedules a restore even when the power source is unchanged");
+        Assert(!changes.Observe(PowerLineStatus.Unknown,true)&&changes.Observe(PowerLineStatus.Online),"Resume with unknown power defers restoration until a known reading");
+        string old=Preferences.Folder;Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-power-settings");
+        try {
+            using(var hw=new FakeHardware()) {
+                foreach(int mode in new[]{0,1,2}) {
+                    var prefs=new Preferences {LastPerformanceMode=mode};hw.Values[Id.Mode]=3;hw.WriteIds.Clear();hw.ModeReads=0;
+                    var errors=PowerRestore.Apply(hw,prefs,new SessionOverrides(),()=>{});
+                    Assert(errors.Length==0&&hw.Values[Id.Mode]==mode&&hw.WriteIds.SequenceEqual(new[]{Id.Mode})&&hw.ModeReads==0,"Power change restores selected "+new[]{"Balanced","Turbo","Silent"}[mode]+" without ambiguous firmware readback");
+                }
+                hw.WriteIds.Clear();PowerRestore.Apply(hw,new Preferences(),new SessionOverrides(),()=>{});
+                Assert(hw.WriteIds.Count==0,"Power changes do not invent a mode when the user has never selected one");
+                var session=new SessionOverrides();var curve=hw.Read(0,0);curve[8]=4;var savedCurve=(byte[])curve.Clone();
+                session.ApplyCurve(hw,Id.Curves[0],curve);session.ApplyPower(hw,Id.Power[0],25);curve[8]=9;
+                hw.ResetOverridesOnMode=true;hw.WriteIds.Clear();var selected=new Preferences {LastPerformanceMode=2,ChargeConfigured=true,ChargeLimit=80};bool automatic=false;
+                var result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==0&&hw.WriteIds.SequenceEqual(new[]{Id.Mode,Id.Curves[0],Id.Power[0],Id.Battery})&&hw.ReadReplies[Id.Curves[0]].SequenceEqual(savedCurve)&&hw.Values[Id.Power[0]]==25&&automatic,"Profile restores precede cloned session overrides, charge limit, and automatic settings");
+                hw.RejectWrite=Id.Power[0];bool rejected=false;
+                try {session.ApplyPower(hw,Id.Power[0],30);}catch(InvalidOperationException){rejected=true;}
+                hw.RejectWrite=null;PowerRestore.Apply(hw,selected,session,()=>{});
+                Assert(rejected&&session.Count==2&&hw.Values[Id.Power[0]]==25,"Rejected custom writes do not replace the last accepted session values");
+                hw.RejectWrite=Id.Mode;hw.WriteIds.Clear();automatic=false;
+                result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==1&&hw.WriteIds.SequenceEqual(new[]{Id.Battery})&&automatic&&session.Count==2,"Rejected profile restore skips profile-specific overrides but still applies independent settings");
+                hw.RejectWrite=Id.Curves[0];hw.WriteIds.Clear();automatic=false;
+                result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==1&&hw.WriteIds.Contains(Id.Power[0])&&hw.WriteIds.Contains(Id.Battery)&&automatic,"One failed session override does not block power limits, charging, or automatic settings");
+                hw.RejectWrite=Id.Battery;automatic=false;
+                result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==1&&automatic,"Charge-limit restoration failure does not block automatic GPU and screen settings");
+                hw.RejectWrite=null;
+                result=PowerRestore.Apply(hw,selected,session,()=> {throw new InvalidOperationException("Automatic setting rejected.");});
+                Assert(result.Length==1&&hw.Values[Id.Mode]==2,"Automatic settings failure does not undo the restored performance mode");
+                hw.RejectWrite=Id.Mode;rejected=false;
+                try {selected.SelectPerformanceMode(hw,0,session.Clear);}catch(InvalidOperationException){rejected=true;}
+                Assert(rejected&&session.Count==2&&selected.LastPerformanceMode==2,"Failed manual mode selection preserves session overrides");
+                hw.RejectWrite=null;selected.SelectPerformanceMode(hw,0,session.Clear);hw.WriteIds.Clear();PowerRestore.Apply(hw,selected,session,()=>{});
+                Assert(session.Count==0&&hw.Values[Id.Mode]==0&&hw.WriteIds.SequenceEqual(new[]{Id.Mode,Id.Battery}),"A new manual mode clears previous overrides and wins over a pending power restore");
+                var attempted=new List<string>();bool screen=false;
+                PowerRestore.Attempt(attempted,"GPU",()=> {throw new InvalidOperationException("GPU unavailable.");});
+                PowerRestore.Attempt(attempted,"Screen",()=>screen=true);
+                Assert(attempted.Count==1&&screen,"Independent automatic actions continue after a GPU failure");
+            }
+        } finally {
+            string path=Path.Combine(Preferences.Folder,"settings.xml");if(File.Exists(path))File.Delete(path);
+            if(Directory.Exists(Preferences.Folder))Directory.Delete(Preferences.Folder);Preferences.Folder=old;
+        }
+    }
+    static void FirmwareDrafts() {
+        byte[][] reported={
+            new byte[]{43,68,70,72,74,76,78,255,1,6,8,13,18,22,32,32},
+            new byte[]{43,67,68,70,70,70,70,255,1,6,8,13,18,22,32,32},
+            new byte[]{43,68,70,72,74,76,78,255,1,1,16,16,28,35,47,47}
+        };
+        using(var hw=new FakeHardware()) {
+            for(int i=0;i<3;i++) {
+                var packet=new byte[64];Buffer.BlockCopy(reported[i],0,packet,0,16);hw.ReadReplies[Id.Curves[i]]=packet;
+            }
+            Assert(LaptopCapabilities.CurveFans(hw,2).SequenceEqual(new[]{0,1,2}),"Captured GA403UP firmware replies enable CPU GPU and Middle fan choices");
+            foreach(var curve in reported) {
+                var original=(byte[])curve.Clone();var draft=AdvancedFansPanel.EditableCurve(curve);FansPanel.ValidateCurve(draft);
+                Assert(curve.SequenceEqual(original)&&draft[7]==100&&draft[15]>=70,"Firmware draft repairs terminal point without changing the original reply");
+            }
+            var gpu=AdvancedFansPanel.EditableCurve(reported[1]);
+            Assert(gpu.Take(8).SequenceEqual(new byte[]{43,67,68,70,71,72,73,100}),"Repeated firmware temperatures become distinct editable draft points");
+            var valid=hw.Read(0,0);
+            Assert(AdvancedFansPanel.EditableCurve(valid).SequenceEqual(valid),"Already editable firmware curves are preserved exactly");
+            var invalid=(byte[])reported[0].Clone();invalid[3]=30;bool rejected=false;
+            try {AdvancedFansPanel.EditableCurve(invalid);}catch(InvalidOperationException){rejected=true;}
+            Assert(rejected,"Descending firmware temperatures are rejected rather than repaired");
+            invalid=(byte[])reported[0].Clone();invalid[12]=1;rejected=false;
+            try {AdvancedFansPanel.EditableCurve(invalid);}catch(InvalidOperationException){rejected=true;}
+            Assert(rejected,"Descending firmware fan speeds remain rejected");
+            invalid=(byte[])reported[0].Clone();invalid[3]=255;rejected=false;
+            try {AdvancedFansPanel.EditableCurve(invalid);}catch(InvalidOperationException){rejected=true;}
+            Assert(rejected,"255 is accepted only at the terminal firmware point");
+            using(var form=new MainForm(hw,new Preferences {LastPerformanceMode=2},true,"AuthenticAMD",1f)) {
+                form.Show();Application.DoEvents();form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
+                var fields=Descendants(form).OfType<NoWheelNumber>().Where(n=>n.Maximum==100).ToArray();
+                Assert(Descendants(form).OfType<ComboBox>().Single().Items.Count==3&&fields.Length==16&&fields.All(n=>n.Enabled)&&Descendants(form).OfType<Label>().Any(l=>l.Text=="Firmware draft adjusted. Review before Apply.")&&hw.Writes==0,"Real firmware defaults open editable fields with an adjusted-draft notice and no hardware writes");
+            }
+        }
+    }
+    static void DriverBuffers() {
+        var capacities=new List<int>();
+        var packet=AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);if(capacity<64)throw new System.ComponentModel.Win32Exception(122);return BitConverter.GetBytes(65536+41);});
+        Assert(capacities.SequenceEqual(new[]{16,64})&&BitConverter.ToInt32(packet,0)==65577,"ASUS reads retry an insufficient buffer with a larger capacity");
+        capacities.Clear();
+        AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);if(capacity<256)throw new System.ComponentModel.Win32Exception(234);return new byte[16];});
+        Assert(capacities.SequenceEqual(new[]{16,64,256}),"ASUS partial-data reads retry with a bounded larger buffer");
+        capacities.Clear();bool failed=false;
+        try {AsusHardware.Transfer(false,capacity=> {capacities.Add(capacity);throw new System.ComponentModel.Win32Exception(122);});}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==122;}
+        Assert(failed&&capacities.Count==1,"ASUS writes are never retried after a buffer error");
+        capacities.Clear();failed=false;
+        try {AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);throw new System.ComponentModel.Win32Exception(5);});}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==5;}
+        Assert(failed&&capacities.Count==1,"Read permission errors remain visible and are not retried");
+        capacities.Clear();failed=false;
+        try {AsusHardware.Transfer(true,capacity=> {capacities.Add(capacity);throw new System.ComponentModel.Win32Exception(122);});}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==122;}
+        Assert(failed&&capacities.SequenceEqual(new[]{16,64,256,1024,4096}),"Read buffer growth stops at 4096 bytes and preserves the driver error");
+        var output=new byte[64];output[0]=7;
+        Assert(AsusHardware.ReturnedBytes(output,4).SequenceEqual(new byte[]{7,0,0,0}),"Only bytes actually returned by the driver are decoded");
+        bool shortRejected=false,overrunRejected=false;
+        try {AsusHardware.ReturnedBytes(output,3);}catch(InvalidOperationException){shortRejected=true;}
+        try {AsusHardware.ReturnedBytes(output,65);}catch(InvalidOperationException){overrunRejected=true;}
+        Assert(shortRejected&&overrunRejected,"Incomplete and out-of-range response lengths are rejected");
+        using(var hw=new FakeHardware()) {
+            var curve=hw.Read(Id.Curves[0],0);var padded=new byte[64];Buffer.BlockCopy(curve,0,padded,0,16);hw.ReadReplies[Id.Curves[0]]=padded;
+            Assert(LaptopCapabilities.ReadFanCurve(hw,Id.Curves[0],0).SequenceEqual(curve),"Fan curve decoding accepts zero padding from a larger driver response");
+            padded[20]=1;failed=false;try {LaptopCapabilities.ReadFanCurve(hw,Id.Curves[0],0);}catch(InvalidOperationException){failed=true;}
+            Assert(failed&&!LaptopCapabilities.CurveFans(hw,0).Contains(0),"Unexpected extra fan payload is rejected without guessing a curve");
+            hw.ReadReplies[Id.Curves[0]]=new byte[12];
+            Assert(!LaptopCapabilities.CurveFans(hw,0).Contains(0),"Short fan responses cannot enable the curve editor");
+            hw.ReadReplies.Clear();hw.ReadErrors[Id.Curves[0]]=122;hw.ReadErrors[Id.Curves[1]]=234;
+            Assert(LaptopCapabilities.CurveFans(hw,0).SequenceEqual(new[]{2}),"A fan read buffer failure preserves other available fan choices");
+            hw.ReadErrors[Id.Curves[2]]=122;hw.GetErrors[Id.Power[1]]=122;
+            Assert(LaptopCapabilities.PowerLimits(hw,"AuthenticAMD").Select(p=>p.Id).SequenceEqual(new[]{Id.Power[0],Id.Power[2]}),"An unavailable optional power read preserves the other power controls");
+            using(var form=new MainForm(hw,new Preferences(),true,"AuthenticAMD",1f)) {
+                form.Show();Application.DoEvents();Size size=form.Size;Point anchor=form.Location;
+                form.ToggleFans();form.fansPanel.ToggleAdvanced();Application.DoEvents();
+                Assert(!Descendants(form).OfType<ComboBox>().Single().Enabled&&Descendants(form).OfType<CheckBox>().Count(c=>new[]{"SPL","fPPT"}.Contains(c.Text))==2&&form.Size==size&&form.Location==anchor&&hw.Writes==0,"Advanced opens with available power controls when fan curve reads fail");
+            }
+            hw.ReadErrors[Id.Curves[0]]=5;failed=false;try {LaptopCapabilities.CurveFans(hw,0);}catch(System.ComponentModel.Win32Exception ex){failed=ex.NativeErrorCode==5;}
+            Assert(failed,"Fan capability detection does not hide access-denied errors");
+        }
+    }
+    static void WheelMessage(Control control,int delta) {
+        var message=Message.Create(control.Handle,0x20A,new IntPtr((long)(ushort)(short)delta<<16),IntPtr.Zero);
+        control.GetType().GetMethod("WndProc",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).Invoke(control,new object[]{message});
+    }
+    static void ScrollingFans() {
+        foreach(float scale in new[]{1f,1.5f,2f})using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences(),true,"AuthenticAMD",scale)) {
+            form.Show();Application.DoEvents();form.Location=new Point(50,50);Point anchor=form.Location;Size size=form.Size;
+            form.ToggleFans();Application.DoEvents();
+            Assert(form.Size==size&&form.Location==anchor&&form.contentHost.CanScroll&&form.fansPanel.FindForm()==form,"Simple cooling scrolls inside the original window at "+(scale*100)+"% DPI");
+            form.fansPanel.ToggleAdvanced();Application.DoEvents();form.contentHost.ScrollTo(int.MaxValue);
+            var viewport=form.contentHost;
+            Assert(form.Size==size&&form.Location==anchor&&!form.AutoScroll&&!viewport.AutoScroll&&viewport.Content.Bottom==viewport.ClientSize.Height&&Descendants(form).Where(c=>c.Parent==viewport.Content&&c.Visible).All(c=>c.Right<=viewport.Content.Width),"Advanced cooling reaches the bottom without horizontal scrolling at "+(scale*100)+"% DPI");
+            var slider=Descendants(form).OfType<PointerTrackBar>().Single();int limit=slider.Value;
+            viewport.ScrollTo(0);WheelMessage(slider,-120);
+            Assert(slider.Value==limit&&(viewport.Offset>0||SystemInformation.MouseWheelScrollLines==0),"Wheel over charge slider scrolls without changing limit at "+(scale*100)+"% DPI");
+            var number=Descendants(form).OfType<NoWheelNumber>().First();decimal value=number.Value;
+            viewport.ScrollTo(0);WheelMessage(number,-120);
+            Assert(number.Value==value&&(viewport.Offset>0||SystemInformation.MouseWheelScrollLines==0),"Wheel over fan editor scrolls without changing value at "+(scale*100)+"% DPI");
+            var fan=Descendants(form).OfType<NoWheelComboBox>().Single();int index=fan.SelectedIndex;
+            viewport.ScrollTo(0);WheelMessage(fan,-120);
+            Assert(fan.SelectedIndex==index&&(viewport.Offset>0||SystemInformation.MouseWheelScrollLines==0),"Wheel over fan choice scrolls without changing selection at "+(scale*100)+"% DPI");
+            viewport.ScrollTo(0);number.Focus();Application.DoEvents();
+            Assert(viewport.Offset>0,"Keyboard focus reveals off-screen fan controls at "+(scale*100)+"% DPI");
+            form.fansPanel.ToggleAdvanced();form.ToggleFans();Application.DoEvents();
+            Assert(form.Size==size&&form.Location==anchor&&!viewport.CanScroll&&viewport.Offset==0&&hw.Writes==0,"Closing cooling restores the main view without resizing or hardware writes at "+(scale*100)+"% DPI");
+        }
     }
     static void RememberedState() {
         var primary=new Rectangle(0,0,1920,1040);var left=new Rectangle(-1920,0,1920,1040);var window=new Size(828,930);

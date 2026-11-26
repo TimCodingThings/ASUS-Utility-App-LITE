@@ -21,11 +21,11 @@ public class AdvancedFansPanel : UserControl {
         for(int i=0;i<8;i++) { temps[i]=Number(59+i*40,34,38,1,100); speeds[i]=Number(59+i*40,66,38,0,100); }
         apply.Text="Apply fan"; apply.SetBounds(250,101,128,28); apply.Click+=(s,e)=>Execute(()=> {
             byte[] curve=new byte[16]; for(int i=0;i<8;i++) {curve[i]=(byte)temps[i].Value;curve[i+8]=(byte)speeds[i].Value;}
-            ValidateCurve(curve); main.Guard(); main.Hw.Set(Id.Curves[curveFans[fan.SelectedIndex]],curve);
+            main.ApplyFanCurve(Id.Curves[curveFans[fan.SelectedIndex]],curve);
             result.Text="Fan curve accepted. Other fans were unchanged.";
         }); Controls.Add(apply);
         var reset=new Button { Text="Restore firmware defaults" }; reset.SetBounds(0,101,220,28);
-        reset.Click+=(s,e)=>Execute(()=> {main.Guard();if(mode<0)throw new InvalidOperationException("Select a performance mode in the main window first.");main.Hw.Write(Id.Mode,mode);LoadCurve();result.Text="Firmware performance profile reapplied.";}); Controls.Add(reset);
+        reset.Click+=(s,e)=>Execute(()=> {if(mode<0)throw new InvalidOperationException("Select a performance mode in the main window first.");main.ChangeMode(mode);result.Text="Firmware performance profile reapplied.";}); Controls.Add(reset);
         LabelAt("CPU power limits",0,143,300,23).Font=new Font(Font,FontStyle.Bold);
         limits=LaptopCapabilities.PowerLimits(main.Hw,main.CpuVendor);
         for(int i=0;i<limits.Length;i++) {
@@ -42,7 +42,7 @@ public class AdvancedFansPanel : UserControl {
                 if(powerEnabled[i].Checked&&powerEnabled[j].Checked&&power[i].Value>power[j].Value)
                     throw new InvalidOperationException(limits[i].Name+" must not exceed "+limits[j].Name+".");
             main.Guard();
-            for(int i=0;i<limits.Length;i++) if(powerEnabled[i].Checked) { main.Hw.Write(limits[i].Id,(int)power[i].Value); result.Text=limits[i].Name+" applied."; }
+            for(int i=0;i<limits.Length;i++) if(powerEnabled[i].Checked) { main.ApplyPowerLimit(limits[i].Id,(int)power[i].Value); result.Text=limits[i].Name+" applied."; }
             result.Text="Selected power limits accepted.";
         }); Controls.Add(powerApply);
         powerApply.Enabled=limits.Length>0;
@@ -73,10 +73,10 @@ public class AdvancedFansPanel : UserControl {
         try {
             if(mode<0)throw new InvalidOperationException("Select a performance mode first.");
             if(fan.SelectedIndex<0)throw new InvalidOperationException("Fan curves unavailable.");
-            byte[] curve=main.Hw.Read(Id.Curves[curveFans[fan.SelectedIndex]],mode==1?2:mode==2?1:0);
-            ValidateCurve(curve);
+            byte[] firmware=LaptopCapabilities.ReadFanCurve(main.Hw,Id.Curves[curveFans[fan.SelectedIndex]],mode);
+            byte[] curve=EditableCurve(firmware);
             for(int i=0;i<8;i++) { temps[i].Value=curve[i]; speeds[i].Value=curve[i+8]; }
-            curveAvailable=true; result.Text="Firmware curve loaded. Edit then apply.";
+            curveAvailable=true; result.Text=curve.SequenceEqual(firmware)?"Firmware curve loaded. Edit then apply.":"Firmware draft adjusted. Review before Apply.";
         } catch { result.Text=mode<0?"Select a performance mode first.":"No valid firmware curve available for this fan/profile."; }
         apply.Enabled=curveAvailable;
         foreach(var n in temps.Concat(speeds))n.Enabled=curveAvailable;
@@ -88,6 +88,22 @@ public class AdvancedFansPanel : UserControl {
                 throw new InvalidOperationException("Use increasing temperatures (1–100°C) and nondecreasing fan speeds (0–100%).");
         }
         if(curve[15]<70)throw new InvalidOperationException("The last fan point must be at least 70%.");
+    }
+    internal static void ValidateFirmwareCurve(byte[] curve) {
+        if(curve==null||curve.Length!=16)throw new InvalidOperationException("Fan curve must contain eight points.");
+        for(int i=0;i<8;i++) {
+            bool temperature=curve[i]>=1&&(curve[i]<=110||(i==7&&curve[i]==255));
+            if(!temperature||curve[i+8]>100||(i>0&&(curve[i]<curve[i-1]||curve[i+8]<curve[i+7])))
+                throw new InvalidOperationException("Firmware fan curve has invalid temperatures or speeds.");
+        }
+    }
+    internal static byte[] EditableCurve(byte[] firmware) {
+        ValidateFirmwareCurve(firmware);byte[] draft=(byte[])firmware.Clone();int previous=0;
+        for(int i=0;i<8;i++) {
+            // Reserve space for the remaining points within the editor's range.
+            draft[i]=(byte)Math.Max(previous+1,Math.Min(100-(7-i),firmware[i]));previous=draft[i];
+        }
+        draft[15]=Math.Max((byte)70,draft[15]);ValidateCurve(draft);return draft;
     }
 }
 public class FansPanel : UserControl {
@@ -131,5 +147,6 @@ public class FansPanel : UserControl {
         if(advanced!=null)advanced.SetMode(value);
     }
     internal static void ValidateCurve(byte[] curve) {AdvancedFansPanel.ValidateCurve(curve);}
+    internal static void ValidateFirmwareCurve(byte[] curve) {AdvancedFansPanel.ValidateFirmwareCurve(curve);}
 }
 }

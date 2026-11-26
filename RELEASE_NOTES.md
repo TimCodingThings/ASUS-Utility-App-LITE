@@ -1,11 +1,12 @@
-ASUS Utility LITE 1.2.4
+ASUS Utility LITE 1.3.0
 
-- Remembers the window position after a drag, closing to the tray, and exiting; restores it on the next launch.
-- Recovers saved positions onto an available screen when a monitor has been disconnected, preserving negative coordinates for monitors left of the primary display.
-- Remembers the last successfully selected Silent, Balanced, or Turbo profile across app restarts. The selected button is highlighted and labeled Last set.
-- Failed firmware writes do not replace the remembered profile. Restoring the highlight does not read ambiguous ASUS profile data or automatically reapply the profile.
-- Includes 88 offline checks covering saved settings, window recovery, profile selection, compatibility, launcher validation, and DPI layouts.
+- Adds the remembered Let Lite control profiles option to the tray menu. It temporarily stops only ArmouryCrateControlInterface and ArmouryCrateService, then requests the saved profile and restores accepted session overrides. It also takes control on subsequent launches when enabled.
+- Restores only services Lite originally stopped when the option is disabled or the app exits. Closing to the tray retains control. Services already stopped by the user stay stopped; startup types and ASUS Optimization/hotkey services are unchanged.
+- Adds a persistent local recovery journal, rollback for partial takeover failures, independent restoration attempts, and bounded waits. Service changes run away from the UI thread. Native stop requests do not cascade into unrelated dependent services.
+- Detects competing Armoury Crate services and shows a clickable conflict warning in the existing feedback row. The window's dimensions and scrolling are unchanged. If services are restarted externally, the warning returns rather than repeatedly stopping them.
+- User testing identified Armoury Crate as the source of the charger-triggered Performance switch: stopping it prevented that switch. Driver acknowledgement still does not verify the actual firmware mode. The new takeover/restoration feature requires live validation; offline checks use simulated services and hardware.
+- Includes 178 offline checks, covering original service state, partial rollback, interrupted-session recovery, restoration failures, scope restrictions, and warning layout at 100%, 150%, and 200% DPI.
 
-After updating, exit the previous running copy from the system tray and reopen the installed executable. Select a performance mode once to establish the saved selection. Existing settings are imported without inventing a previous mode or position.
+Exit the previous tray copy and reopen the installed executable, then right-click its tray icon and enable Let Lite control profiles once. Armoury Crate profile controls may be unavailable while this option is enabled. Disable the option or exit Lite to restore services Lite stopped.
 
-Retains the approved per-user launcher, AMD/Intel Zephyrus compatibility, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes still need physical validation. Independent app, not an official ASUS product.
+Retains the supplied logo, GPL-3.0 licensing, and G-Helper attribution. Independent app, not an official ASUS product.

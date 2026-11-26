@@ -1,4 +1,4 @@
-ASUS Utility LITE 1.2.4
+ASUS Utility LITE 1.2.9
 
 Run ASUS Utility LITE.exe from a permanent folder and accept the administrator
 prompt once. Later normal launches use the approved per-user launch task.
@@ -10,7 +10,7 @@ The renamed app imports previous Lite settings and its startup entry on first
 launch. Current settings: %LOCALAPPDATA%\ASUS Utility LITE\settings.xml
 
 See README.md for controls, requirements, testing limits, downloads, and source.
-Run Build.ps1 to build locally and Test.ps1 for the 88 offline checks.
+Run Build.ps1 to build locally and Test.ps1 for the 164 offline checks.
 AMD and Intel Zephyrus controls adapt to available firmware features.
 See docs/COMPATIBILITY.md for coverage and physical testing limits.
 Run ASUS Utility LITE Diagnostics.cmd for a local, read-only diagnostic report.

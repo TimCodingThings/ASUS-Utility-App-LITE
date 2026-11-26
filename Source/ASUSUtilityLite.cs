@@ -6,21 +6,23 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 using Microsoft.Win32;
 namespace ASUSUtilityLite {
 public class Preferences {
     public bool Optimized, AutoScreen;
+    public bool ControlProfiles;
     public int ChargeLimit=80;
     public bool ChargeConfigured;
     public int LastPerformanceMode=-1;
     public bool WindowPositionSaved;
     public int WindowX,WindowY;
-    internal void SelectPerformanceMode(IHardware hardware,int value) {
+    internal void SelectPerformanceMode(IHardware hardware,int value,Action accepted=null) {
         if(value<0||value>2)throw new ArgumentOutOfRangeException("value");
         hardware.Write(Id.Mode,value);
-        LastPerformanceMode=value;Save();
+        LastPerformanceMode=value;if(accepted!=null)accepted();Save();
     }
     internal void RememberWindow(Point location) {
         WindowX=location.X;WindowY=location.Y;WindowPositionSaved=true;Save();
@@ -97,9 +99,10 @@ static class Program {
             }
             float previewScale=args.Contains("--scale200")?2f:args.Contains("--scale150")?1.5f:1f;
             using(var form=new MainForm(sample,new Preferences(),true,vendor,previewScale)) {
+                form.Show(); Application.DoEvents();
                 if(args.Contains("--preview-fans"))form.ToggleFans();
                 if(args.Contains("--preview-advanced")) {form.ToggleFans();form.fansPanel.ToggleAdvanced();}
-                form.Show(); Application.DoEvents();
+                Application.DoEvents();
                 using(var bitmap=new Bitmap(form.Width,form.Height)) { form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,form.Size)); bitmap.Save(args.Last()); }
             }
             return;
@@ -177,15 +180,26 @@ public class MainForm : Form {
     readonly Button[] modeButtons=new Button[3],gpuButtons=new Button[4],screenButtons=new Button[3];
     readonly TrackBar limit=new PointerTrackBar(); readonly CheckBox startup=new CheckBox();
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
+    readonly System.Windows.Forms.Timer powerTimer=new System.Windows.Forms.Timer();
+    readonly PowerTransitions powerTransitions=new PowerTransitions();
+    readonly SessionOverrides sessionOverrides=new SessionOverrides();
     readonly NvidiaTemperature nvidia=new NvidiaTemperature();
     readonly BatteryTelemetry batteryTelemetry=new BatteryTelemetry();
     readonly Label batteryPower=new Label(),batteryTime=new Label();
+    readonly Label profileFeedback=new Label();
+    readonly ProfileCommandFeedback profileCommand=new ProfileCommandFeedback();
+    readonly ProfileDiagnostics profileDiagnostics;
+    readonly ProfileServices profileServices=new ProfileServices();
+    ProfileControl profileControl; ToolStripMenuItem controlProfilesItem; bool changingProfileControl;
+    bool? armouryConflict; DateTime conflictChecked=DateTime.MinValue;
+    readonly ToolTip profileHelp=new ToolTip();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
-    NotifyIcon tray; bool quitting,initializing=true,paused; int lastPower=-1; string panel;
+    internal readonly VerticalScrollPanel contentHost=new VerticalScrollPanel();
+    NotifyIcon tray; bool quitting,initializing=true,paused; string panel;
     int mode {get {return prefs.LastPerformanceMode>=0&&prefs.LastPerformanceMode<=2?prefs.LastPerformanceMode:preview?1:-1;}}
     public MainForm(IHardware hardware,Preferences settings,bool demo,string cpuVendor=null,float previewScale=0) {
         SuspendLayout();
-        Hw=hardware; prefs=settings; preview=demo; CpuVendor=cpuVendor??LaptopCapabilities.CpuVendor;
+        Hw=hardware; prefs=settings; preview=demo; profileDiagnostics=new ProfileDiagnostics(hardware); CpuVendor=cpuVendor??LaptopCapabilities.CpuVendor;
         Text="ASUS Utility LITE"; ClientSize=new Size(414,390); FormBorderStyle=FormBorderStyle.FixedSingle; AutoScroll=false;
         MaximizeBox=false; StartPosition=FormStartPosition.CenterScreen; BackColor=Color.FromArgb(27,29,32); ForeColor=Color.WhiteSmoke;
         Font=new Font("Segoe UI",9); AutoScaleMode=AutoScaleMode.None; Icon=LoadAppIcon();
@@ -197,32 +211,39 @@ public class MainForm : Form {
         AddLabel(cpu,"CPU —",151,73,245,20); cpu.TextAlign=ContentAlignment.MiddleRight;
         string[] modes={"Silent","Balanced","Turbo"};
         for(int i=0;i<3;i++) { int v=i; modeButtons[i]=ButtonAt(modes[i],18+i*129,97,120,30,()=>ChangeMode(v==0?2:v==1?0:1)); }
-        AddLabel(gpuTitle,"GPU mode",18,140,210,20); gpuTitle.Font=new Font(Font,FontStyle.Bold);
-        AddLabel(gpu,"GPU —",224,140,172,20); gpu.TextAlign=ContentAlignment.MiddleRight;
+        AddLabel(profileFeedback,profileCommand.Text,18,129,378,18);profileFeedback.Font=new Font(Font.FontFamily,8);profileFeedback.ForeColor=Color.Silver;
+        string profileExplanation="The highlighted button is your selection, not a verified firmware reading. Accepted means the ASUS driver acknowledged the command. Lite does not independently verify the current firmware mode.";
+        profileHelp.SetToolTip(profileFeedback,profileExplanation);profileHelp.SetToolTip(modeTitle,profileExplanation);foreach(var button in modeButtons)profileHelp.SetToolTip(button,profileExplanation);
+        AddLabel(gpuTitle,"GPU mode",18,155,210,20); gpuTitle.Font=new Font(Font,FontStyle.Bold);
+        AddLabel(gpu,"GPU —",224,155,172,20); gpu.TextAlign=ContentAlignment.MiddleRight;
         string[] gpus={"Eco","Standard","Ultimate","Optimized"};
-        for(int i=0;i<4;i++) { int v=i; gpuButtons[i]=ButtonAt(gpus[i],18+i*96,164,90,30,()=>ChangeGpu(v)); }
-        AddLabel(screenTitle,"Screen",18,207,220,20); screenTitle.Font=new Font(Font,FontStyle.Bold);
-        AddLabel(mid,"Mid fan —",240,207,156,20); mid.TextAlign=ContentAlignment.MiddleRight;
-        screenButtons[0]=ButtonAt("Auto",18,231,120,28,()=>SetScreen(0));
-        screenButtons[1]=ButtonAt("60 Hz",147,231,120,28,()=>SetScreen(60));
-        screenButtons[2]=ButtonAt("120 Hz",276,231,120,28,()=>SetScreen(120));
-        AddLabel(limitTitle,"Battery charge limit",18,272,280,20); limitTitle.Font=new Font(Font,FontStyle.Bold);
+        for(int i=0;i<4;i++) { int v=i; gpuButtons[i]=ButtonAt(gpus[i],18+i*96,179,90,30,()=>ChangeGpu(v)); }
+        AddLabel(screenTitle,"Screen",18,218,220,20); screenTitle.Font=new Font(Font,FontStyle.Bold);
+        AddLabel(mid,"Mid fan —",240,218,156,20); mid.TextAlign=ContentAlignment.MiddleRight;
+        screenButtons[0]=ButtonAt("Auto",18,242,120,28,()=>SetScreen(0));
+        screenButtons[1]=ButtonAt("60 Hz",147,242,120,28,()=>SetScreen(60));
+        screenButtons[2]=ButtonAt("120 Hz",276,242,120,28,()=>SetScreen(120));
+        AddLabel(limitTitle,"Battery charge limit",18,279,280,20); limitTitle.Font=new Font(Font,FontStyle.Bold);
         // TrackBar.AutoSize otherwise restores a taller native height, allowing
         // its background to cover the top of the startup/charge row below it.
-        limit.AutoSize=false; limit.SetBounds(15,296,386,25); limit.Minimum=40; limit.Maximum=100; limit.TickStyle=TickStyle.None; limit.SmallChange=5; limit.LargeChange=10;
+        limit.AutoSize=false; limit.SetBounds(15,303,386,25); limit.Minimum=40; limit.Maximum=100; limit.TickStyle=TickStyle.None; limit.SmallChange=5; limit.LargeChange=10;
         limit.Value=Math.Max(40,Math.Min(100,prefs.ChargeLimit)); limit.ValueChanged+=(s,e)=>limitTitle.Text="Battery charge limit: "+limit.Value+"%";
         limit.MouseUp+=(s,e)=>ApplyLimit(); limit.KeyUp+=(s,e)=> { if(e.KeyCode==Keys.Left||e.KeyCode==Keys.Right||e.KeyCode==Keys.Home||e.KeyCode==Keys.End||e.KeyCode==Keys.PageUp||e.KeyCode==Keys.PageDown) ApplyLimit(); };
         Controls.Add(limit); limitTitle.Text="Battery charge limit: "+limit.Value+"%";
-        startup.Text="Run on startup"; startup.SetBounds(18,324,180,22); startup.Checked=!preview&&Startup.Enabled();
+        startup.Text="Run on startup"; startup.SetBounds(18,331,180,22); startup.Checked=!preview&&Startup.Enabled();
         startup.CheckedChanged+=(s,e)=> { if(initializing)return; Run(()=>Startup.Set(startup.Checked)); initializing=true; startup.Checked=Startup.Enabled(); initializing=false; }; Controls.Add(startup);
-        AddLabel(charge,"Charge: —",235,324,161,22); charge.TextAlign=ContentAlignment.MiddleRight;
-        AddLabel(batteryPower,"Battery power: —",18,351,192,22);
-        AddLabel(batteryTime,"Est. remaining: —",212,351,184,22);batteryTime.TextAlign=ContentAlignment.MiddleRight;
+        AddLabel(charge,"Charge: —",235,331,161,22); charge.TextAlign=ContentAlignment.MiddleRight;
+        AddLabel(batteryPower,"Battery power: —",18,354,192,22);
+        AddLabel(batteryTime,"Est. remaining: —",212,354,184,22);batteryTime.TextAlign=ContentAlignment.MiddleRight;
         fansToggle=ButtonAt("Fans + Power   ▸",18,382,378,28,ToggleFans); fansToggle.TextAlign=ContentAlignment.MiddleLeft;
         AddLabel(status,"",18,417,378,20); status.ForeColor=Color.Silver; status.Font=new Font(Font.FontFamily,8);
         ClientSize=new Size(414,443);
+        foreach(Control control in Controls.Cast<Control>().ToArray())contentHost.Content.Controls.Add(control);
+        contentHost.Dock=DockStyle.Fill;Controls.Add(contentHost);
         if(!preview) {
             var menu=new ContextMenuStrip(); menu.Items.Add("Open",null,(s,e)=> { Show(); WindowState=FormWindowState.Normal; Activate(); RefreshState(); });
+            controlProfilesItem=new ToolStripMenuItem("Let Lite control profiles") {Checked=prefs.ControlProfiles,ToolTipText="Pauses Armoury Crate profile services while Lite runs; restores services Lite stopped when disabled or exited."};
+            controlProfilesItem.Click+=async (s,e)=>await SetProfileControl(!prefs.ControlProfiles);menu.Items.Add(controlProfilesItem);
             menu.Items.Add("About / license",null,(s,e)=>MessageBox.Show("ASUS Utility LITE "+Application.ProductVersion+"\nModified independent app using G-Helper ASUS protocol code.\nGPL-3.0; no warranty. Source and LICENSE.txt are included.\nhttps://github.com/seerge/g-helper", "About"));
             menu.Items.Add("Exit",null,(s,e)=> { quitting=true; Close(); });
             tray=new NotifyIcon { Icon=Icon,Text="ASUS Utility LITE",Visible=true,ContextMenuStrip=menu };
@@ -235,6 +256,9 @@ public class MainForm : Form {
             if(preview&&previewScale>0)ScalePreviewFonts(this,UiScale/nativeScale);
         }
         Scale(new SizeF(UiScale,UiScale));
+        contentHost.SetContentHeight(contentHost.ClientSize.Height);
+        powerTimer.Interval=2000;powerTimer.Tick+=(s,e)=>RestoreAfterPowerChange();
+        profileFeedback.Click+=async (s,e)=> {if(armouryConflict==true)await SetProfileControl(true);};
         initializing=false; RefreshState();
         timer.Interval=3000; timer.Tick+=(s,e)=> { timer.Interval=Visible?3000:30000; RefreshState(); }; if(!preview)timer.Start();
         SystemEvents.PowerModeChanged+=OnPower;
@@ -243,8 +267,47 @@ public class MainForm : Form {
             Load+=(s,e)=>Location=WindowPlacement.Restore(new Point(prefs.WindowX,prefs.WindowY),Size,Screen.AllScreens.Select(screen=>screen.WorkingArea).ToArray());
         }
         ResizeEnd+=(s,e)=>SaveWindowPosition();
-        Shown+=(s,e)=> { if(!preview) Run(()=> { Guard(); if(prefs.ChargeConfigured) Hw.Write(Id.Battery,prefs.ChargeLimit); ApplyAutomatic(); }); };
-        FormClosing+=(s,e)=> {SaveWindowPosition(); if(!quitting&&!preview&&e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; Hide(); timer.Interval=30000; } };
+        Shown+=async (s,e)=> { if(!preview) {if(!await SetProfileControl(prefs.ControlProfiles))return;Run(()=> { Guard(); if(prefs.ChargeConfigured) Hw.Write(Id.Battery,prefs.ChargeLimit); ApplyAutomatic(); });} };
+        FormClosing+=(s,e)=> {
+            if(changingProfileControl) {e.Cancel=true;quitting=false;return;}
+            SaveWindowPosition(); if(!quitting&&!preview&&e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; Hide(); timer.Interval=30000;return; }
+            if(!preview&&profileControl!=null)try {profileControl.Release();}catch(Exception ex) {e.Cancel=true;quitting=false;Show();MessageBox.Show(this,ex.Message+"\nExit again to retry restoring services.","ASUS Utility LITE");}
+        };
+    }
+    async Task<bool> SetProfileControl(bool enabled) {
+        if(preview||changingProfileControl)return false;
+        if(enabled&&OtherHelper()) {Run(()=>Guard());return false;}
+        changingProfileControl=true;Enabled=false;bool success=false;if(controlProfilesItem!=null)controlProfilesItem.Enabled=false;
+        powerTimer.Stop();status.Text=enabled?"Taking profile control…":"Restoring Armoury Crate services…";
+        try {
+            await Task.Run(()=> {
+                if(profileControl==null)profileControl=new ProfileControl(profileServices,Path.Combine(Preferences.Folder,"profile-services.txt"));
+                if(enabled)profileControl.Acquire();else profileControl.Release();
+            });
+            prefs.ControlProfiles=enabled;prefs.Save();
+            if(enabled&&mode>=0) {
+                Guard();profileDiagnostics.Begin(mode,"profile control");
+                var errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileDiagnostics.Complete(accepted);profileCommand.Complete(mode,accepted,DateTime.Now);});
+                if(errors.Length>0)throw new InvalidOperationException(string.Join("; ",errors));
+            }
+            success=true;
+            status.Text=enabled?"Lite controls profiles · Armoury Crate paused":"Ready";
+        }catch(Exception ex) {status.Text=ex.Message;MessageBox.Show(this,ex.Message,"ASUS Utility LITE",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+        finally {
+            changingProfileControl=false;Enabled=true;conflictChecked=DateTime.MinValue;
+            if(controlProfilesItem!=null) {controlProfilesItem.Checked=prefs.ControlProfiles;controlProfilesItem.Enabled=true;}
+            RefreshState();
+        }
+        return success;
+    }
+    void UpdateProfileFeedback() {
+        if(!preview&&(DateTime.UtcNow-conflictChecked).TotalSeconds>=5) {armouryConflict=ProfileControl.Conflict(profileServices.Running);conflictChecked=DateTime.UtcNow;}
+        profileFeedback.Text=armouryConflict==true?"Actual mode unavailable · Armoury Crate conflict":profileCommand.Text;
+        profileFeedback.ForeColor=armouryConflict==true?Color.FromArgb(255,190,95):Color.Silver;
+        profileFeedback.Cursor=armouryConflict==true?Cursors.Hand:Cursors.Default;
+        profileHelp.SetToolTip(profileFeedback,profileCommand.Text+"\n"+(armouryConflict==true?
+            "Armoury Crate profile services are running and may override Lite. Click here to let Lite control profiles. This pauses only ArmouryCrateService and ArmouryCrateControlInterface; services Lite stopped are restored on Exit or when the tray option is disabled.":
+            "Accepted means the driver acknowledged the command, not verified firmware state. Let Lite control profiles is available in the tray menu. Armoury Crate controls may be unavailable while paused."));
     }
     void SaveWindowPosition() {
         if(preview||initializing||!IsHandleCreated)return;
@@ -278,6 +341,7 @@ public class MainForm : Form {
     static string Temperature(int n) { return n>0&&n<130?n+"°C":"—"; }
     static string Fan(int raw) { int n=raw&65535; return raw>=0&&n<=120?n+"%":"—"; }
     void RefreshState() {
+        if(!preview)ObservePower(SystemInformation.PowerStatus.PowerLineStatus);
         // Windows battery status is independent of ASUS ACPI availability.
         float battery=SystemInformation.PowerStatus.BatteryLifePercent;
         charge.Text=battery>=0&&battery<=1?"Charge: "+(battery*100).ToString("0.0")+"%":"Charge unavailable";
@@ -288,7 +352,8 @@ public class MainForm : Form {
             paused=!preview&&OtherHelper();
             // DSTS is not a reliable current-profile readback (this laptop
             // returns 3). Only display a profile selected successfully in Lite.
-            string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Last set: "+names[mode]:"Select a mode";
+            string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Selected: "+names[mode]:"Select a mode";
+            UpdateProfileFeedback();
             for(int i=0;i<3;i++) Select(modeButtons[i],mode==(i==0?2:i==1?0:1));
             cpu.Text="CPU "+Temperature(Hw.Get(Id.CpuTemp))+" · Fan "+Fan(Hw.Get(Id.Fans[0]));
             int gpuTemperature=Hw.Get(Id.GpuTemp);
@@ -314,29 +379,33 @@ public class MainForm : Form {
             if(preview)status.Text="Preview · sample readings · hardware changes disabled";
             else if(paused)status.Text="Paused — exit G-Helper to enable controls";
             else if(status.Text.StartsWith("Paused")) status.Text="Ready";
-            int power=SystemInformation.PowerStatus.PowerLineStatus==PowerLineStatus.Online?1:0;
-            if(!preview&&!paused&&lastPower>=0&&lastPower!=power) ApplyAutomatic();
-            lastPower=power;
         } catch(Exception ex) { status.Text=ex.Message; }
     }
     internal void ToggleFans() {
-        if(fansPanel==null) { fansPanel=new FansPanel(this,mode); fansPanel.Location=new Point((int)(414*UiScale),(int)(73*UiScale)); fansPanel.SizeChanged+=(s,e)=>LayoutFans(); Controls.Add(fansPanel); }
+        if(fansPanel==null) { fansPanel=new FansPanel(this,mode); fansPanel.Location=new Point((int)(18*UiScale),(int)(417*UiScale)); fansPanel.SizeChanged+=(s,e)=>LayoutFans(); contentHost.Content.Controls.Add(fansPanel); }
         fansExpanded=!fansExpanded; fansPanel.Visible=fansExpanded;
         LayoutFans();
     }
     void LayoutFans() {
         Point anchor=Location;
-        AutoScrollPosition=Point.Empty;
         bool expanded=fansExpanded;
+        limit.Width=(int)((expanded?381:386)*UiScale);
         fansToggle.Text="Fans + Power   "+(expanded?"▾":"▸");
-        status.Top=Math.Max(fansToggle.Bottom,expanded?fansPanel.Bottom:0)+(int)(7*UiScale);
-        int contentHeight=status.Bottom+(int)(8*UiScale);
-        // The inline side panel fits all controls without a scrollable surface.
-        AutoScroll=false;AutoScrollMinSize=Size.Empty;
-        ClientSize=new Size((int)((expanded?810:414)*UiScale),contentHeight);
+        status.Top=expanded?fansPanel.Bottom+(int)(7*UiScale):(int)(417*UiScale);
+        int contentHeight=expanded?status.Bottom+(int)(8*UiScale):contentHost.ClientSize.Height;
+        contentHost.SetContentHeight(contentHeight);
+        contentHost.ScrollTo(expanded?fansToggle.Top:0);
         Location=anchor;
     }
-    internal void ChangeMode(int value) { Guard(); prefs.SelectPerformanceMode(Hw,value); if(fansPanel!=null)fansPanel.SetMode(value); }
+    internal void ChangeMode(int value) {
+        Guard();bool accepted=false;
+        if(!preview)profileDiagnostics.Begin(value,"manual");
+        try {prefs.SelectPerformanceMode(Hw,value,()=> {accepted=true;profileDiagnostics.Complete(true);sessionOverrides.Clear();profileCommand.Complete(value,true,DateTime.Now);UpdateProfileFeedback();});}
+        catch {if(!accepted){profileDiagnostics.Complete(false);profileCommand.Complete(value,false,DateTime.Now);UpdateProfileFeedback();}throw;}
+        if(fansPanel!=null)fansPanel.SetMode(value);
+    }
+    internal void ApplyFanCurve(uint id,byte[] curve) {Guard();sessionOverrides.ApplyCurve(Hw,id,curve);}
+    internal void ApplyPowerLimit(uint id,int value) {Guard();sessionOverrides.ApplyPower(Hw,id,value);}
     void ApplyLimit() { Run(()=> { Guard(); Hw.Write(Id.Battery,limit.Value); prefs.ChargeLimit=limit.Value; prefs.ChargeConfigured=true; prefs.Save(); }); }
     void ChangeGpu(int target) {
         Guard(); int mux=Hw.Get(Id.Mux),eco=Hw.Get(Id.Eco);
@@ -366,12 +435,43 @@ public class MainForm : Form {
         Guard(); var power=SystemInformation.PowerStatus.PowerLineStatus;
         if(power==PowerLineStatus.Unknown)return;
         bool plugged=power==PowerLineStatus.Online;
-        if(prefs.Optimized && Hw.Get(Id.Mux)!=0&&LaptopCapabilities.Binary(Hw.Get(Id.Eco))) Hw.EcoMode(!plugged);
-        if(prefs.AutoScreen) { string name=Display.InternalPanel(); int[] rates=Display.Rates(name); if(rates.Length>0)Display.Set(name,plugged?rates.Max():rates.Contains(60)?60:rates.Min()); }
+        var errors=new System.Collections.Generic.List<string>();
+        if(prefs.Optimized)PowerRestore.Attempt(errors,"GPU",()=> {if(Hw.Get(Id.Mux)!=0&&LaptopCapabilities.Binary(Hw.Get(Id.Eco)))Hw.EcoMode(!plugged);});
+        if(prefs.AutoScreen)PowerRestore.Attempt(errors,"Screen",()=> {string name=Display.InternalPanel();int[] rates=Display.Rates(name);if(rates.Length>0)Display.Set(name,plugged?rates.Max():rates.Contains(60)?60:rates.Min());});
+        if(errors.Count>0)throw new InvalidOperationException(string.Join("; ",errors));
+    }
+    void ObservePower(PowerLineStatus power,bool resumed=false) {
+        if(powerTransitions.Observe(power,resumed)) {
+            powerTimer.Stop();powerTimer.Start();
+            if(mode>=0)profileCommand.Pending(power);else profileCommand.NotSent();UpdateProfileFeedback();
+        }
+    }
+    void RestoreAfterPowerChange() {
+        powerTimer.Stop();if(preview||IsDisposed)return;
+        if(changingProfileControl) {powerTimer.Start();return;}
+        var power=SystemInformation.PowerStatus.PowerLineStatus;
+        if(power==PowerLineStatus.Unknown) {powerTransitions.Observe(power,true);return;}
+        if(powerTransitions.Observe(power)) {powerTimer.Start();return;}
+        string[] errors;
+        bool? profileAccepted=null;
+        try {Guard();if(mode>=0)profileDiagnostics.Begin(mode,"power transition");errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileAccepted=accepted;profileDiagnostics.Complete(accepted);profileCommand.Complete(prefs.LastPerformanceMode,accepted,DateTime.Now);});}
+        catch(Exception ex) {profileCommand.NotSent();errors=new[]{ex.Message};}
+        UpdateProfileFeedback();
+        status.Text=errors.Length==0?"Power change handled — "+(power==PowerLineStatus.Online?"AC":"battery"):"Power-change command failed; see Power restore.log";
+        if(!preview)try {
+            string path=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Power restore.log");
+            if(File.Exists(path)&&new FileInfo(path).Length>32768)File.WriteAllText(path,"");
+            File.AppendAllText(path,DateTime.Now.ToString("s")+" version="+Application.ProductVersion+" source="+power+" selected mode="+prefs.LastPerformanceMode+" profile_write="+(profileAccepted.HasValue?(profileAccepted.Value?"accepted":"failed"):"not_sent")+" actual_mode=unverified "+(errors.Length==0?"commands completed":string.Join("; ",errors))+Environment.NewLine);
+        } catch {}
+        RefreshState();
     }
     void OnPower(object sender,PowerModeChangedEventArgs e) {
-        if(e.Mode==PowerModes.Suspend || preview || !IsHandleCreated || IsDisposed)return;
-        BeginInvoke((Action)(()=>Run(()=> { Guard(); ApplyAutomatic(); if(e.Mode==PowerModes.Resume&&prefs.ChargeConfigured)Hw.Write(Id.Battery,prefs.ChargeLimit); })));
+        if(preview||!IsHandleCreated||IsDisposed)return;
+        try {BeginInvoke((Action)(()=> {
+            if(IsDisposed)return;
+            if(e.Mode==PowerModes.Suspend) {powerTimer.Stop();return;}
+            ObservePower(SystemInformation.PowerStatus.PowerLineStatus,e.Mode==PowerModes.Resume);RefreshState();
+        }));}catch(InvalidOperationException) {}
     }
     protected override void WndProc(ref Message message) {
         if(WindowActivation.Message!=0&&message.Msg==(int)WindowActivation.Message) {
@@ -379,6 +479,6 @@ public class MainForm : Form {
         }
         base.WndProc(ref message);
     }
-    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose();powerTimer.Dispose();profileDiagnostics.Dispose();profileHelp.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
 }
 }

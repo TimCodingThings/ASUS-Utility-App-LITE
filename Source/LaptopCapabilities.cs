@@ -36,16 +36,40 @@ internal sealed class LaptopCapabilities {
         return limits.ToArray();
     }
     static void AddPower(List<PowerLimit> limits,IHardware hw,uint id,string name) {
-        int value=hw.Get(id);if(value>=0)limits.Add(new PowerLimit(id,name,value));
+        try {int value=hw.Get(id);if(value>=0)limits.Add(new PowerLimit(id,name,value));}
+        catch(System.ComponentModel.Win32Exception ex) {if(!OptionalUnavailable(ex))throw;}
     }
+    static bool OptionalUnavailable(System.ComponentModel.Win32Exception ex) {return ex.NativeErrorCode==1||ex.NativeErrorCode==50||ex.NativeErrorCode==122||ex.NativeErrorCode==234;}
     internal static int[] CurveFans(IHardware hw,int mode) {
         var fans=new List<int>();if(mode<0)return fans.ToArray();
         for(int i=0;i<Id.Curves.Length;i++) {
-            try {FansPanel.ValidateCurve(hw.Read(Id.Curves[i],mode==1?2:mode==2?1:0));fans.Add(i);}
-            catch(System.ComponentModel.Win32Exception ex) {if(ex.NativeErrorCode!=1&&ex.NativeErrorCode!=50)throw;}
+            try {ReadFanCurve(hw,Id.Curves[i],mode);fans.Add(i);}
+            catch(System.ComponentModel.Win32Exception ex) {if(!OptionalUnavailable(ex))throw;}
             catch(InvalidOperationException) {}
         }
         return fans.ToArray();
+    }
+    internal static byte[] ReadFanCurve(IHardware hw,uint id,int mode) {
+        byte[] raw;int argument=mode==1?2:mode==2?1:0;
+        try {raw=hw.Read(id,argument);}
+        catch(Exception ex) {RecordCurve(hw,id,argument,null,ex.Message);throw;}
+        RecordCurve(hw,id,argument,raw,null);
+        if(raw==null||raw.Length<16)throw new InvalidOperationException("Fan curve response is incomplete.");
+        var curve=new byte[16];Buffer.BlockCopy(raw,0,curve,0,16);FansPanel.ValidateFirmwareCurve(curve);
+        // Wider driver buffers may include zero padding, but never infer a
+        // curve from a status header or silently discard additional payload.
+        for(int i=16;i<raw.Length;i++)if(raw[i]!=0)throw new InvalidOperationException("Fan curve response contains unexpected trailing data.");
+        return curve;
+    }
+    static readonly HashSet<string> reportedCurves=new HashSet<string>();
+    static void RecordCurve(IHardware hw,uint id,int argument,byte[] raw,string error) {
+        if(!(hw is AsusHardware)||!reportedCurves.Add(id+":"+argument))return;
+        try {
+            string path=System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Fan curve diagnostics.log");
+            if(System.IO.File.Exists(path)&&new System.IO.FileInfo(path).Length>65536)System.IO.File.WriteAllText(path,"");
+            System.IO.File.AppendAllText(path,DateTime.Now.ToString("s")+" endpoint=0x"+id.ToString("X8")+" argument="+argument+" "+
+                (raw==null?"error="+error:"length="+raw.Length+" raw="+BitConverter.ToString(raw))+Environment.NewLine);
+        } catch {}
     }
 }
 }
