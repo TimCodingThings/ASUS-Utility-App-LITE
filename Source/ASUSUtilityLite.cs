@@ -6,12 +6,14 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 using Microsoft.Win32;
 namespace ASUSUtilityLite {
 public class Preferences {
     public bool Optimized, AutoScreen;
+    public bool ControlProfiles;
     public int ChargeLimit=80;
     public bool ChargeConfigured;
     public int LastPerformanceMode=-1;
@@ -187,6 +189,9 @@ public class MainForm : Form {
     readonly Label profileFeedback=new Label();
     readonly ProfileCommandFeedback profileCommand=new ProfileCommandFeedback();
     readonly ProfileDiagnostics profileDiagnostics;
+    readonly ProfileServices profileServices=new ProfileServices();
+    ProfileControl profileControl; ToolStripMenuItem controlProfilesItem; bool changingProfileControl;
+    bool? armouryConflict; DateTime conflictChecked=DateTime.MinValue;
     readonly ToolTip profileHelp=new ToolTip();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
     internal readonly VerticalScrollPanel contentHost=new VerticalScrollPanel();
@@ -237,6 +242,8 @@ public class MainForm : Form {
         contentHost.Dock=DockStyle.Fill;Controls.Add(contentHost);
         if(!preview) {
             var menu=new ContextMenuStrip(); menu.Items.Add("Open",null,(s,e)=> { Show(); WindowState=FormWindowState.Normal; Activate(); RefreshState(); });
+            controlProfilesItem=new ToolStripMenuItem("Let Lite control profiles") {Checked=prefs.ControlProfiles,ToolTipText="Pauses Armoury Crate profile services while Lite runs; restores services Lite stopped when disabled or exited."};
+            controlProfilesItem.Click+=async (s,e)=>await SetProfileControl(!prefs.ControlProfiles);menu.Items.Add(controlProfilesItem);
             menu.Items.Add("About / license",null,(s,e)=>MessageBox.Show("ASUS Utility LITE "+Application.ProductVersion+"\nModified independent app using G-Helper ASUS protocol code.\nGPL-3.0; no warranty. Source and LICENSE.txt are included.\nhttps://github.com/seerge/g-helper", "About"));
             menu.Items.Add("Exit",null,(s,e)=> { quitting=true; Close(); });
             tray=new NotifyIcon { Icon=Icon,Text="ASUS Utility LITE",Visible=true,ContextMenuStrip=menu };
@@ -251,6 +258,7 @@ public class MainForm : Form {
         Scale(new SizeF(UiScale,UiScale));
         contentHost.SetContentHeight(contentHost.ClientSize.Height);
         powerTimer.Interval=2000;powerTimer.Tick+=(s,e)=>RestoreAfterPowerChange();
+        profileFeedback.Click+=async (s,e)=> {if(armouryConflict==true)await SetProfileControl(true);};
         initializing=false; RefreshState();
         timer.Interval=3000; timer.Tick+=(s,e)=> { timer.Interval=Visible?3000:30000; RefreshState(); }; if(!preview)timer.Start();
         SystemEvents.PowerModeChanged+=OnPower;
@@ -259,8 +267,47 @@ public class MainForm : Form {
             Load+=(s,e)=>Location=WindowPlacement.Restore(new Point(prefs.WindowX,prefs.WindowY),Size,Screen.AllScreens.Select(screen=>screen.WorkingArea).ToArray());
         }
         ResizeEnd+=(s,e)=>SaveWindowPosition();
-        Shown+=(s,e)=> { if(!preview) Run(()=> { Guard(); if(prefs.ChargeConfigured) Hw.Write(Id.Battery,prefs.ChargeLimit); ApplyAutomatic(); }); };
-        FormClosing+=(s,e)=> {SaveWindowPosition(); if(!quitting&&!preview&&e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; Hide(); timer.Interval=30000; } };
+        Shown+=async (s,e)=> { if(!preview) {if(!await SetProfileControl(prefs.ControlProfiles))return;Run(()=> { Guard(); if(prefs.ChargeConfigured) Hw.Write(Id.Battery,prefs.ChargeLimit); ApplyAutomatic(); });} };
+        FormClosing+=(s,e)=> {
+            if(changingProfileControl) {e.Cancel=true;quitting=false;return;}
+            SaveWindowPosition(); if(!quitting&&!preview&&e.CloseReason==CloseReason.UserClosing) { e.Cancel=true; Hide(); timer.Interval=30000;return; }
+            if(!preview&&profileControl!=null)try {profileControl.Release();}catch(Exception ex) {e.Cancel=true;quitting=false;Show();MessageBox.Show(this,ex.Message+"\nExit again to retry restoring services.","ASUS Utility LITE");}
+        };
+    }
+    async Task<bool> SetProfileControl(bool enabled) {
+        if(preview||changingProfileControl)return false;
+        if(enabled&&OtherHelper()) {Run(()=>Guard());return false;}
+        changingProfileControl=true;Enabled=false;bool success=false;if(controlProfilesItem!=null)controlProfilesItem.Enabled=false;
+        powerTimer.Stop();status.Text=enabled?"Taking profile control…":"Restoring Armoury Crate services…";
+        try {
+            await Task.Run(()=> {
+                if(profileControl==null)profileControl=new ProfileControl(profileServices,Path.Combine(Preferences.Folder,"profile-services.txt"));
+                if(enabled)profileControl.Acquire();else profileControl.Release();
+            });
+            prefs.ControlProfiles=enabled;prefs.Save();
+            if(enabled&&mode>=0) {
+                Guard();profileDiagnostics.Begin(mode,"profile control");
+                var errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileDiagnostics.Complete(accepted);profileCommand.Complete(mode,accepted,DateTime.Now);});
+                if(errors.Length>0)throw new InvalidOperationException(string.Join("; ",errors));
+            }
+            success=true;
+            status.Text=enabled?"Lite controls profiles · Armoury Crate paused":"Ready";
+        }catch(Exception ex) {status.Text=ex.Message;MessageBox.Show(this,ex.Message,"ASUS Utility LITE",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+        finally {
+            changingProfileControl=false;Enabled=true;conflictChecked=DateTime.MinValue;
+            if(controlProfilesItem!=null) {controlProfilesItem.Checked=prefs.ControlProfiles;controlProfilesItem.Enabled=true;}
+            RefreshState();
+        }
+        return success;
+    }
+    void UpdateProfileFeedback() {
+        if(!preview&&(DateTime.UtcNow-conflictChecked).TotalSeconds>=5) {armouryConflict=ProfileControl.Conflict(profileServices.Running);conflictChecked=DateTime.UtcNow;}
+        profileFeedback.Text=armouryConflict==true?"Actual mode unavailable · Armoury Crate conflict":profileCommand.Text;
+        profileFeedback.ForeColor=armouryConflict==true?Color.FromArgb(255,190,95):Color.Silver;
+        profileFeedback.Cursor=armouryConflict==true?Cursors.Hand:Cursors.Default;
+        profileHelp.SetToolTip(profileFeedback,profileCommand.Text+"\n"+(armouryConflict==true?
+            "Armoury Crate profile services are running and may override Lite. Click here to let Lite control profiles. This pauses only ArmouryCrateService and ArmouryCrateControlInterface; services Lite stopped are restored on Exit or when the tray option is disabled.":
+            "Accepted means the driver acknowledged the command, not verified firmware state. Let Lite control profiles is available in the tray menu. Armoury Crate controls may be unavailable while paused."));
     }
     void SaveWindowPosition() {
         if(preview||initializing||!IsHandleCreated)return;
@@ -306,7 +353,7 @@ public class MainForm : Form {
             // DSTS is not a reliable current-profile readback (this laptop
             // returns 3). Only display a profile selected successfully in Lite.
             string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Selected: "+names[mode]:"Select a mode";
-            profileFeedback.Text=profileCommand.Text;
+            UpdateProfileFeedback();
             for(int i=0;i<3;i++) Select(modeButtons[i],mode==(i==0?2:i==1?0:1));
             cpu.Text="CPU "+Temperature(Hw.Get(Id.CpuTemp))+" · Fan "+Fan(Hw.Get(Id.Fans[0]));
             int gpuTemperature=Hw.Get(Id.GpuTemp);
@@ -353,8 +400,8 @@ public class MainForm : Form {
     internal void ChangeMode(int value) {
         Guard();bool accepted=false;
         if(!preview)profileDiagnostics.Begin(value,"manual");
-        try {prefs.SelectPerformanceMode(Hw,value,()=> {accepted=true;profileDiagnostics.Complete(true);sessionOverrides.Clear();profileCommand.Complete(value,true,DateTime.Now);profileFeedback.Text=profileCommand.Text;});}
-        catch {if(!accepted){profileDiagnostics.Complete(false);profileCommand.Complete(value,false,DateTime.Now);profileFeedback.Text=profileCommand.Text;}throw;}
+        try {prefs.SelectPerformanceMode(Hw,value,()=> {accepted=true;profileDiagnostics.Complete(true);sessionOverrides.Clear();profileCommand.Complete(value,true,DateTime.Now);UpdateProfileFeedback();});}
+        catch {if(!accepted){profileDiagnostics.Complete(false);profileCommand.Complete(value,false,DateTime.Now);UpdateProfileFeedback();}throw;}
         if(fansPanel!=null)fansPanel.SetMode(value);
     }
     internal void ApplyFanCurve(uint id,byte[] curve) {Guard();sessionOverrides.ApplyCurve(Hw,id,curve);}
@@ -396,11 +443,12 @@ public class MainForm : Form {
     void ObservePower(PowerLineStatus power,bool resumed=false) {
         if(powerTransitions.Observe(power,resumed)) {
             powerTimer.Stop();powerTimer.Start();
-            if(mode>=0)profileCommand.Pending(power);else profileCommand.NotSent();profileFeedback.Text=profileCommand.Text;
+            if(mode>=0)profileCommand.Pending(power);else profileCommand.NotSent();UpdateProfileFeedback();
         }
     }
     void RestoreAfterPowerChange() {
         powerTimer.Stop();if(preview||IsDisposed)return;
+        if(changingProfileControl) {powerTimer.Start();return;}
         var power=SystemInformation.PowerStatus.PowerLineStatus;
         if(power==PowerLineStatus.Unknown) {powerTransitions.Observe(power,true);return;}
         if(powerTransitions.Observe(power)) {powerTimer.Start();return;}
@@ -408,7 +456,7 @@ public class MainForm : Form {
         bool? profileAccepted=null;
         try {Guard();if(mode>=0)profileDiagnostics.Begin(mode,"power transition");errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileAccepted=accepted;profileDiagnostics.Complete(accepted);profileCommand.Complete(prefs.LastPerformanceMode,accepted,DateTime.Now);});}
         catch(Exception ex) {profileCommand.NotSent();errors=new[]{ex.Message};}
-        profileFeedback.Text=profileCommand.Text;
+        UpdateProfileFeedback();
         status.Text=errors.Length==0?"Power change handled — "+(power==PowerLineStatus.Online?"AC":"battery"):"Power-change command failed; see Power restore.log";
         if(!preview)try {
             string path=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Power restore.log");

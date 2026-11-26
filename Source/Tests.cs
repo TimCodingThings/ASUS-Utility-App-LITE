@@ -76,10 +76,11 @@ static class Tests {
             FirmwareDrafts();
             PowerChanges();
             ProfileFeedback();
+            ProfileServiceControl();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
-            var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
-            var read=Preferences.Load();Assert(read.Optimized&&read.AutoScreen&&read.ChargeConfigured&&read.ChargeLimit==80,"Atomic settings round trip");
+            var prefs=new Preferences {Optimized=true,AutoScreen=true,ControlProfiles=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
+            var read=Preferences.Load();Assert(read.Optimized&&read.AutoScreen&&read.ControlProfiles&&read.ChargeConfigured&&read.ChargeLimit==80,"Atomic settings round trip");
             File.Delete(Path.Combine(Preferences.Folder,"settings.xml"));Directory.Delete(Preferences.Folder);Preferences.Folder=old;
         } catch(Exception ex) {Console.WriteLine("FAIL "+ex);Environment.ExitCode=1;}
     }
@@ -133,6 +134,54 @@ static class Tests {
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    sealed class FakeProfileServices : IProfileServices {
+        internal readonly Dictionary<string,bool> States=ProfileControl.Names.ToDictionary(name=>name,name=>false);
+        internal readonly List<string> Calls=new List<string>();
+        internal string FailStop,FailStart;
+        public bool Running(string name) {return States[name];}
+        public void Stop(string name) {Calls.Add("stop "+name);if(name==FailStop)throw new InvalidOperationException("stop refused");States[name]=false;}
+        public void Start(string name) {Calls.Add("start "+name);if(name==FailStart)throw new InvalidOperationException("start refused");States[name]=true;}
+    }
+    static void ProfileServiceControl() {
+        string folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-profile-control-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+        string path=Path.Combine(folder,"services.txt");string first=ProfileControl.Names[0],second=ProfileControl.Names[1];
+        try {
+            var services=new FakeProfileServices();services.States[first]=true;
+            var control=new ProfileControl(services,path);
+            Assert(control.Conflict()==true,"Running Armoury Crate services are detected without changing them");
+            control.Acquire();
+            Assert(!services.States[first]&&!services.States[second]&&File.ReadAllLines(path).SequenceEqual(new[]{first}),"Taking control records and stops only originally running targeted services");
+            control.Release();
+            Assert(services.States[first]&&!services.States[second]&&File.ReadAllLines(path).Length==0,"Releasing control preserves services the user had already stopped");
+            control.Acquire();services.Calls.Clear();
+            new ProfileControl(services,path).Release();
+            Assert(services.Calls.SequenceEqual(new[]{"start "+first})&&services.States[first],"A fresh process can restore services from the interrupted-session journal");
+            File.WriteAllLines(path,new[]{"UnrelatedService",first});services.States[first]=false;services.Calls.Clear();
+            new ProfileControl(services,path).Release();
+            Assert(services.Calls.SequenceEqual(new[]{"start "+first}),"Recovery ignores service names outside the explicit Armoury Crate allowlist");
+            services.States[first]=true;services.States[second]=true;services.FailStop=second;services.Calls.Clear();
+            control=new ProfileControl(services,path);bool failed=false;
+            try {control.Acquire();}catch(InvalidOperationException) {failed=true;}
+            Assert(failed&&services.States[first]&&services.States[second]&&File.ReadAllLines(path).Length==0,"A partial takeover failure rolls back services already stopped");
+            services.FailStop=null;control.Acquire();services.FailStart=second;failed=false;
+            try {control.Release();}catch(InvalidOperationException) {failed=true;}
+            Assert(failed&&services.States[first]&&!services.States[second]&&File.ReadAllLines(path).SequenceEqual(new[]{second}),"A restoration failure retains recovery state while restoring other services");
+            services.FailStart=null;new ProfileControl(services,path).Release();
+            Assert(services.States[second]&&File.ReadAllLines(path).Length==0,"Failed restoration can be retried in a later process");
+            Assert(ProfileControl.Conflict(name=> {if(name==first)throw new UnauthorizedAccessException();return true;})==true,"A failed service query cannot hide another confirmed running controller");
+            Assert(ProfileControl.Conflict(name=> {throw new UnauthorizedAccessException();})==null,"Service access errors are reported as unknown rather than no conflict");
+            Assert(ProfileControl.Conflict(name=>false)==false,"Stopped or absent Armoury Crate services clear the conflict");
+            foreach(float scale in new[]{1f,1.5f,2f})using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences(),true,"AuthenticAMD",scale)) {
+                form.Show();Application.DoEvents();
+                var conflict=typeof(MainForm).GetField("armouryConflict",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic);
+                conflict.SetValue(form,true);
+                typeof(MainForm).GetMethod("UpdateProfileFeedback",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).Invoke(form,null);
+                var row=Descendants(form).OfType<Label>().Single(label=>label.Text.Contains("Armoury Crate conflict"));
+                Size measured=TextRenderer.MeasureText(row.Text,row.Font);
+                Assert(measured.Width<=row.Width&&measured.Height<=row.Height&&hw.Writes==0,"Conflict warning fits and preview never controls services at "+scale*100+"% DPI");
+            }
+        }finally {Directory.Delete(folder,true);}
     }
     static void ProfileFeedback() {
         var feedback=new ProfileCommandFeedback();var time=new DateTime(2026,11,25,12,34,56);
