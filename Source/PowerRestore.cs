@@ -38,11 +38,12 @@ internal static class PowerRestore {
     internal static void Attempt(List<string> errors,string name,Action action) {
         try {action();}catch(Exception ex) {errors.Add(name+": "+ex.Message);}
     }
-    internal static string[] Apply(IHardware hw,Preferences prefs,SessionOverrides session,Action automatic) {
+    internal static string[] Apply(IHardware hw,Preferences prefs,SessionOverrides session,Action automatic,Action<bool> profileResult=null) {
         var errors=new List<string>();bool profileReady=true;
         if(prefs.LastPerformanceMode>=0&&prefs.LastPerformanceMode<=2) {
             try {hw.Write(Id.Mode,prefs.LastPerformanceMode);}
             catch(Exception ex) {profileReady=false;errors.Add("Performance mode: "+ex.Message);}
+            if(profileResult!=null)profileResult(profileReady);
         }
         // Reapplying a profile resets its firmware curves and power limits.
         // Restore only values that the user successfully applied this session.

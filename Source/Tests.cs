@@ -75,6 +75,7 @@ static class Tests {
             DriverBuffers();
             FirmwareDrafts();
             PowerChanges();
+            ProfileFeedback();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
@@ -132,6 +133,39 @@ static class Tests {
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    static void ProfileFeedback() {
+        var feedback=new ProfileCommandFeedback();var time=new DateTime(2026,11,25,12,34,56);
+        Assert(feedback.Text.Contains("Actual mode unavailable")&&feedback.Text.Contains("no command sent"),"Saved selection does not imply a command was sent in the new process");
+        feedback.Complete(2,true,time);
+        Assert(feedback.Text.Contains("Silent command accepted 12:34:56")&&feedback.Text.Contains("Actual mode unavailable"),"Acknowledged profile command retains explicit unverified hardware status");
+        feedback.Pending(PowerLineStatus.Online);
+        Assert(feedback.Text.Contains("AC change; restore pending")&&!feedback.Text.Contains("accepted"),"AC change immediately replaces stale acknowledgement with pending status");
+        feedback.Pending(PowerLineStatus.Offline);
+        Assert(feedback.Text.Contains("battery change; restore pending"),"Unplugging exposes a separate battery restore event");
+        feedback.Complete(0,false,time);
+        Assert(feedback.Text.Contains("Balanced command failed 12:34:56")&&!feedback.Text.Contains("accepted"),"Failed profile command is never presented as accepted");
+        feedback.NotSent();Assert(feedback.Text.Contains("not sent")&&!feedback.Text.Contains("pending"),"Blocked restore does not leave a permanent pending acknowledgement");
+        using(var hw=new FakeHardware()) {
+            var prefs=new Preferences {LastPerformanceMode=2};bool? accepted=null;
+            var errors=PowerRestore.Apply(hw,prefs,new SessionOverrides(),()=> {throw new InvalidOperationException("Screen failed.");},value=>accepted=value);
+            Assert(accepted==true&&errors.Length==1,"Profile acknowledgement is separate from unrelated automatic-setting failures");
+            hw.RejectWrite=Id.Mode;accepted=null;
+            errors=PowerRestore.Apply(hw,prefs,new SessionOverrides(),()=>{},value=>accepted=value);
+            Assert(accepted==false&&errors.Length==1,"Rejected hardware write reports a failed profile acknowledgement");
+            hw.RejectWrite=null;accepted=null;
+            PowerRestore.Apply(hw,new Preferences(),new SessionOverrides(),()=>{},value=>accepted=value);
+            Assert(!accepted.HasValue,"An absent profile selection cannot produce a profile-write acknowledgement");
+        }
+        foreach(float scale in new[]{1f,1.5f,2f})using(var hw=new FakeHardware())using(var form=new MainForm(hw,new Preferences {LastPerformanceMode=0},true,"AuthenticAMD",scale)) {
+            form.Show();Application.DoEvents();
+            var row=Descendants(form).OfType<Label>().Single(l=>l.Text.StartsWith("Actual mode unavailable"));
+            var header=Descendants(form).OfType<Label>().Single(l=>l.Text=="Selected: Balanced");
+            feedback.Complete(0,true,time);Size measured=TextRenderer.MeasureText(feedback.Text,row.Font);
+            var slider=Descendants(form).OfType<PointerTrackBar>().Single();
+            var startup=Descendants(form).OfType<CheckBox>().Single(c=>c.Text=="Run on startup");
+            Assert(measured.Width<=row.Width&&measured.Height<=row.Height&&row.Bottom<Descendants(form).OfType<Label>().Single(l=>l.Text.StartsWith("GPU:")).Top&&!slider.Bounds.IntersectsWith(startup.Bounds)&&hw.Writes==0&&hw.ModeReads==0,"Selected mode and unverified acknowledgement fit without overlap at "+(scale*100)+"% DPI");
+        }
     }
     static void PowerChanges() {
         var changes=new PowerTransitions();

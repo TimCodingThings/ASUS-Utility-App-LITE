@@ -184,6 +184,9 @@ public class MainForm : Form {
     readonly NvidiaTemperature nvidia=new NvidiaTemperature();
     readonly BatteryTelemetry batteryTelemetry=new BatteryTelemetry();
     readonly Label batteryPower=new Label(),batteryTime=new Label();
+    readonly Label profileFeedback=new Label();
+    readonly ProfileCommandFeedback profileCommand=new ProfileCommandFeedback();
+    readonly ToolTip profileHelp=new ToolTip();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
     internal readonly VerticalScrollPanel contentHost=new VerticalScrollPanel();
     NotifyIcon tray; bool quitting,initializing=true,paused; string panel;
@@ -202,27 +205,30 @@ public class MainForm : Form {
         AddLabel(cpu,"CPU —",151,73,245,20); cpu.TextAlign=ContentAlignment.MiddleRight;
         string[] modes={"Silent","Balanced","Turbo"};
         for(int i=0;i<3;i++) { int v=i; modeButtons[i]=ButtonAt(modes[i],18+i*129,97,120,30,()=>ChangeMode(v==0?2:v==1?0:1)); }
-        AddLabel(gpuTitle,"GPU mode",18,140,210,20); gpuTitle.Font=new Font(Font,FontStyle.Bold);
-        AddLabel(gpu,"GPU —",224,140,172,20); gpu.TextAlign=ContentAlignment.MiddleRight;
+        AddLabel(profileFeedback,profileCommand.Text,18,129,378,18);profileFeedback.Font=new Font(Font.FontFamily,8);profileFeedback.ForeColor=Color.Silver;
+        string profileExplanation="The highlighted button is your selection, not a verified firmware reading. Accepted means the ASUS driver acknowledged the command. Lite does not independently verify the current firmware mode.";
+        profileHelp.SetToolTip(profileFeedback,profileExplanation);profileHelp.SetToolTip(modeTitle,profileExplanation);foreach(var button in modeButtons)profileHelp.SetToolTip(button,profileExplanation);
+        AddLabel(gpuTitle,"GPU mode",18,155,210,20); gpuTitle.Font=new Font(Font,FontStyle.Bold);
+        AddLabel(gpu,"GPU —",224,155,172,20); gpu.TextAlign=ContentAlignment.MiddleRight;
         string[] gpus={"Eco","Standard","Ultimate","Optimized"};
-        for(int i=0;i<4;i++) { int v=i; gpuButtons[i]=ButtonAt(gpus[i],18+i*96,164,90,30,()=>ChangeGpu(v)); }
-        AddLabel(screenTitle,"Screen",18,207,220,20); screenTitle.Font=new Font(Font,FontStyle.Bold);
-        AddLabel(mid,"Mid fan —",240,207,156,20); mid.TextAlign=ContentAlignment.MiddleRight;
-        screenButtons[0]=ButtonAt("Auto",18,231,120,28,()=>SetScreen(0));
-        screenButtons[1]=ButtonAt("60 Hz",147,231,120,28,()=>SetScreen(60));
-        screenButtons[2]=ButtonAt("120 Hz",276,231,120,28,()=>SetScreen(120));
-        AddLabel(limitTitle,"Battery charge limit",18,272,280,20); limitTitle.Font=new Font(Font,FontStyle.Bold);
+        for(int i=0;i<4;i++) { int v=i; gpuButtons[i]=ButtonAt(gpus[i],18+i*96,179,90,30,()=>ChangeGpu(v)); }
+        AddLabel(screenTitle,"Screen",18,218,220,20); screenTitle.Font=new Font(Font,FontStyle.Bold);
+        AddLabel(mid,"Mid fan —",240,218,156,20); mid.TextAlign=ContentAlignment.MiddleRight;
+        screenButtons[0]=ButtonAt("Auto",18,242,120,28,()=>SetScreen(0));
+        screenButtons[1]=ButtonAt("60 Hz",147,242,120,28,()=>SetScreen(60));
+        screenButtons[2]=ButtonAt("120 Hz",276,242,120,28,()=>SetScreen(120));
+        AddLabel(limitTitle,"Battery charge limit",18,279,280,20); limitTitle.Font=new Font(Font,FontStyle.Bold);
         // TrackBar.AutoSize otherwise restores a taller native height, allowing
         // its background to cover the top of the startup/charge row below it.
-        limit.AutoSize=false; limit.SetBounds(15,296,386,25); limit.Minimum=40; limit.Maximum=100; limit.TickStyle=TickStyle.None; limit.SmallChange=5; limit.LargeChange=10;
+        limit.AutoSize=false; limit.SetBounds(15,303,386,25); limit.Minimum=40; limit.Maximum=100; limit.TickStyle=TickStyle.None; limit.SmallChange=5; limit.LargeChange=10;
         limit.Value=Math.Max(40,Math.Min(100,prefs.ChargeLimit)); limit.ValueChanged+=(s,e)=>limitTitle.Text="Battery charge limit: "+limit.Value+"%";
         limit.MouseUp+=(s,e)=>ApplyLimit(); limit.KeyUp+=(s,e)=> { if(e.KeyCode==Keys.Left||e.KeyCode==Keys.Right||e.KeyCode==Keys.Home||e.KeyCode==Keys.End||e.KeyCode==Keys.PageUp||e.KeyCode==Keys.PageDown) ApplyLimit(); };
         Controls.Add(limit); limitTitle.Text="Battery charge limit: "+limit.Value+"%";
-        startup.Text="Run on startup"; startup.SetBounds(18,324,180,22); startup.Checked=!preview&&Startup.Enabled();
+        startup.Text="Run on startup"; startup.SetBounds(18,331,180,22); startup.Checked=!preview&&Startup.Enabled();
         startup.CheckedChanged+=(s,e)=> { if(initializing)return; Run(()=>Startup.Set(startup.Checked)); initializing=true; startup.Checked=Startup.Enabled(); initializing=false; }; Controls.Add(startup);
-        AddLabel(charge,"Charge: —",235,324,161,22); charge.TextAlign=ContentAlignment.MiddleRight;
-        AddLabel(batteryPower,"Battery power: —",18,351,192,22);
-        AddLabel(batteryTime,"Est. remaining: —",212,351,184,22);batteryTime.TextAlign=ContentAlignment.MiddleRight;
+        AddLabel(charge,"Charge: —",235,331,161,22); charge.TextAlign=ContentAlignment.MiddleRight;
+        AddLabel(batteryPower,"Battery power: —",18,354,192,22);
+        AddLabel(batteryTime,"Est. remaining: —",212,354,184,22);batteryTime.TextAlign=ContentAlignment.MiddleRight;
         fansToggle=ButtonAt("Fans + Power   ▸",18,382,378,28,ToggleFans); fansToggle.TextAlign=ContentAlignment.MiddleLeft;
         AddLabel(status,"",18,417,378,20); status.ForeColor=Color.Silver; status.Font=new Font(Font.FontFamily,8);
         ClientSize=new Size(414,443);
@@ -298,7 +304,8 @@ public class MainForm : Form {
             paused=!preview&&OtherHelper();
             // DSTS is not a reliable current-profile readback (this laptop
             // returns 3). Only display a profile selected successfully in Lite.
-            string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Last set: "+names[mode]:"Select a mode";
+            string[] names={"Balanced","Turbo","Silent"}; modeTitle.Text=mode>=0?"Selected: "+names[mode]:"Select a mode";
+            profileFeedback.Text=profileCommand.Text;
             for(int i=0;i<3;i++) Select(modeButtons[i],mode==(i==0?2:i==1?0:1));
             cpu.Text="CPU "+Temperature(Hw.Get(Id.CpuTemp))+" · Fan "+Fan(Hw.Get(Id.Fans[0]));
             int gpuTemperature=Hw.Get(Id.GpuTemp);
@@ -342,7 +349,12 @@ public class MainForm : Form {
         contentHost.ScrollTo(expanded?fansToggle.Top:0);
         Location=anchor;
     }
-    internal void ChangeMode(int value) { Guard(); prefs.SelectPerformanceMode(Hw,value,sessionOverrides.Clear); if(fansPanel!=null)fansPanel.SetMode(value); }
+    internal void ChangeMode(int value) {
+        Guard();bool accepted=false;
+        try {prefs.SelectPerformanceMode(Hw,value,()=> {accepted=true;sessionOverrides.Clear();profileCommand.Complete(value,true,DateTime.Now);profileFeedback.Text=profileCommand.Text;});}
+        catch {if(!accepted){profileCommand.Complete(value,false,DateTime.Now);profileFeedback.Text=profileCommand.Text;}throw;}
+        if(fansPanel!=null)fansPanel.SetMode(value);
+    }
     internal void ApplyFanCurve(uint id,byte[] curve) {Guard();sessionOverrides.ApplyCurve(Hw,id,curve);}
     internal void ApplyPowerLimit(uint id,int value) {Guard();sessionOverrides.ApplyPower(Hw,id,value);}
     void ApplyLimit() { Run(()=> { Guard(); Hw.Write(Id.Battery,limit.Value); prefs.ChargeLimit=limit.Value; prefs.ChargeConfigured=true; prefs.Save(); }); }
@@ -380,7 +392,10 @@ public class MainForm : Form {
         if(errors.Count>0)throw new InvalidOperationException(string.Join("; ",errors));
     }
     void ObservePower(PowerLineStatus power,bool resumed=false) {
-        if(powerTransitions.Observe(power,resumed)) {powerTimer.Stop();powerTimer.Start();}
+        if(powerTransitions.Observe(power,resumed)) {
+            powerTimer.Stop();powerTimer.Start();
+            if(mode>=0)profileCommand.Pending(power);else profileCommand.NotSent();profileFeedback.Text=profileCommand.Text;
+        }
     }
     void RestoreAfterPowerChange() {
         powerTimer.Stop();if(preview||IsDisposed)return;
@@ -388,13 +403,15 @@ public class MainForm : Form {
         if(power==PowerLineStatus.Unknown) {powerTransitions.Observe(power,true);return;}
         if(powerTransitions.Observe(power)) {powerTimer.Start();return;}
         string[] errors;
-        try {Guard();errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic);}
-        catch(Exception ex) {errors=new[]{ex.Message};}
-        status.Text=errors.Length==0?"Settings restored — "+(power==PowerLineStatus.Online?"AC power":"battery"):"Could not restore all settings; see Power restore.log";
+        bool? profileAccepted=null;
+        try {Guard();errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic,accepted=> {profileAccepted=accepted;profileCommand.Complete(prefs.LastPerformanceMode,accepted,DateTime.Now);});}
+        catch(Exception ex) {profileCommand.NotSent();errors=new[]{ex.Message};}
+        profileFeedback.Text=profileCommand.Text;
+        status.Text=errors.Length==0?"Power change handled — "+(power==PowerLineStatus.Online?"AC":"battery"):"Power-change command failed; see Power restore.log";
         if(!preview)try {
             string path=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Power restore.log");
             if(File.Exists(path)&&new FileInfo(path).Length>32768)File.WriteAllText(path,"");
-            File.AppendAllText(path,DateTime.Now.ToString("s")+" source="+power+" selected mode="+prefs.LastPerformanceMode+" "+(errors.Length==0?"restored":string.Join("; ",errors))+Environment.NewLine);
+            File.AppendAllText(path,DateTime.Now.ToString("s")+" version="+Application.ProductVersion+" source="+power+" selected mode="+prefs.LastPerformanceMode+" profile_write="+(profileAccepted.HasValue?(profileAccepted.Value?"accepted":"failed"):"not_sent")+" actual_mode=unverified "+(errors.Length==0?"commands completed":string.Join("; ",errors))+Environment.NewLine);
         } catch {}
         RefreshState();
     }
@@ -412,6 +429,6 @@ public class MainForm : Form {
         }
         base.WndProc(ref message);
     }
-    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose();powerTimer.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose();powerTimer.Dispose();profileHelp.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
 }
 }

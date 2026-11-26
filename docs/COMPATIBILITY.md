@@ -18,7 +18,7 @@ Detection reads capabilities without writing settings. Power editors retain a co
 
 ## Validation
 
-152 offline checks cover simulated modern AMD, older AMD, Intel, missing MUX/Eco, missing power limits, two-fan, and sparse fan layouts, plus 100%, 150%, and 200% DPI. These scenarios represent firmware layouts, not certification of individual laptop models. Preview flags `--sample-intel`, `--sample-legacy`, and `--sample-unavailable` can be combined with `--preview-advanced`, a DPI flag, and a final PNG path; these do not access real ASUS hardware.
+164 offline checks cover simulated modern AMD, older AMD, Intel, missing MUX/Eco, missing power limits, two-fan, and sparse fan layouts, plus 100%, 150%, and 200% DPI. These scenarios represent firmware layouts, not certification of individual laptop models. Preview flags `--sample-intel`, `--sample-legacy`, and `--sample-unavailable` can be combined with `--preview-advanced`, a DPI flag, and a final PNG path; these do not access real ASUS hardware.
 
 Only the G14 GA403UP has provided physical ASUS/NVIDIA read diagnostics during development. Other models and live hardware writes still need physical validation. Run the included Diagnostics command on another Zephyrus to collect a local read-only report with model, CPU vendor, endpoint responses, and fan curves. The app does not upload it.
 

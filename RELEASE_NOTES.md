@@ -1,13 +1,12 @@
-ASUS Utility LITE 1.2.8
+ASUS Utility LITE 1.2.9
 
-- Restores the last selected performance mode after plugging in, unplugging, and resume, with a two-second settling delay.
-- Coalesces repeated power notifications, ignores unknown readings, and does not rewrite profiles for ordinary battery updates.
-- Restores only fan curves and power limits successfully applied in the current session after reapplying a profile; unapplied drafts are never replayed.
-- Selecting a profile or restoring ASUS defaults clears prior session overrides. A newer user selection takes precedence over a pending restore.
-- Restores configured charging and automatic GPU/display options independently, so an unrelated failure does not block the remaining controls.
-- Reports background restore failures in the status line and bounded local Power restore.log instead of showing dialogs on power events.
-- Includes 152 offline checks, including AC/DC transitions, resume, unchanged notifications, accepted-setting replay, failure isolation, and saved selection behavior.
+- Labels the highlighted performance profile Selected, clearly distinguishing the requested selection from actual firmware state.
+- Adds a separate feedback row showing pending charger-change commands and accepted/failed profile writes with timestamps. Actual mode unavailable remains explicit.
+- Accepted means the ASUS driver acknowledged a command; it is not independent confirmation of the active firmware mode. Saved button highlights are not valid evidence for charger-switch behavior.
+- Keeps profile acknowledgement separate from unrelated automatic-setting failures and does not imply a command was sent merely because a saved selection exists.
+- Replaces the misleading Settings restored message and records version, source, profile_write, and actual_mode=unverified in Power restore.log.
+- Keeps the original window dimensions, vertical-only cooling view, and protected wheel input. Includes 164 offline checks and layout verification at 100%, 150%, and 200% DPI.
 
-Firmware restrictions still apply, including model-specific Turbo behavior on battery. The app remains a running tray utility; no service or driver is installed. Exit the previous tray copy and reopen the installed executable to use the update.
+Exit the previous tray copy and reopen the installed executable to load this update. Reliable active-profile readback has not been established on the GA403UP; charger-switch profile persistence is not independently verified.
 
-Retains the compact scrolling interface, fan-curve draft handling, saved position, approved launcher, supplied logo, GPL-3.0 license, and G-Helper attribution. Other laptop models and live hardware writes are not comprehensively validated. Independent app, not an official ASUS product.
+Retains fan-curve drafts, accepted session-setting replay, saved position, approved launcher, supplied logo, GPL-3.0 license, and G-Helper attribution. Independent app, not an official ASUS product.

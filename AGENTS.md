@@ -28,3 +28,4 @@
 - Keep the main window's dimensions and position unchanged when opening or closing Fans + Power or Advanced.
 - Fans + Power stays inside the main window below the main controls, with vertical scrolling and no horizontal scrolling.
 - Mouse-wheel input scrolls the page, including over sliders, numeric editors, and fan selection; it must never change those settings.
+- Distinguish the selected performance profile and acknowledged commands from independently verified firmware state. Do not use the saved highlight or a successful write as proof of the actual mode; keep readback explicitly unverified until a reliable method is established.
