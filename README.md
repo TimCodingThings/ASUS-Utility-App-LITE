@@ -23,6 +23,8 @@ Windows 10/11 x64 with .NET Framework 4.8 and the ASUS System Control Interface 
 
 The last successfully selected profile stays highlighted after restarting the app and is labeled **Last set**. This records your selection; it does not read the ambiguous firmware profile value or reapply the profile on launch. Select a mode once after updating from a version that did not save it.
 
+While Lite is running, plugging in, unplugging, or resuming schedules a restore after a two-second settling delay. Lite reapplies the selected profile, then fan curves and power limits successfully applied during this session, the configured charge limit, and your Auto/Optimized options. Draft edits are never applied automatically. Choosing a profile or restoring ASUS defaults clears the session's custom overrides. Ordinary battery-status notifications do not trigger repeated profile writes. Failures appear in the status line and local `Power restore.log`, without interrupting wake or charger changes with dialogs. Firmware restrictions still apply; ASUS documents Turbo as charging-only in [Armoury Crate](https://www.asus.com/support/faq/1043747/).
+
 **Window position:** saved after dragging and when closing or exiting. Reopening restores that position. If the saved monitor is unavailable, the app returns to an available screen. Opening and closing Fans + Power preserves the window's position.
 
 **GPU:** Eco disables the dedicated GPU; Standard enables hybrid graphics. Ultimate changes the MUX routing and asks before restarting Windows. Optimized switches between Standard on external power and Eco on battery. Close GPU applications and disconnect displays connected to the dedicated GPU before selecting Eco.
@@ -56,13 +58,13 @@ Run these in PowerShell from the repository directory:
 .\Test.ps1
 ```
 
-The build uses Windows' .NET Framework C# compiler and standard framework assemblies. No SDK or NuGet restore is required. `Source/` contains the full source, manifest, and embedded icon. The 133 offline checks use simulated hardware and do not change real laptop settings. Compatibility checks cover AMD/Intel power layouts, missing GPU/MUX controls, two-fan and sparse fan configurations, and layouts at 100%, 150%, and 200% DPI.
+The build uses Windows' .NET Framework C# compiler and standard framework assemblies. No SDK or NuGet restore is required. `Source/` contains the full source, manifest, and embedded icon. The 152 offline checks use simulated hardware and do not change real laptop settings. Compatibility checks cover AMD/Intel power layouts, missing GPU/MUX controls, two-fan and sparse fan configurations, and layouts at 100%, 150%, and 200% DPI.
 
 A Windows GitHub Actions release workflow is provided in `docs/release-workflow.yml`. To enable it, place it at `.github/workflows/release.yml` using a GitHub account/token with workflow-write permission. The initial public release is built and tested locally. Change `VERSION` and the assembly version before publishing another release; the workflow does not overwrite existing releases.
 
 ## Validation
 
-The app builds successfully, the 133 offline checks pass, and the window layouts have been visually inspected. ASUS ACPI diagnostics and an NVIDIA temperature read were obtained on the GA403UP development laptop. Live writes for performance, fan curves, power limits, charging limits, GPU routing/restarts, scheduled startup, and suspend/resume have not all been independently verified. Other Zephyrus models have simulated compatibility coverage, not physical validation; no claim is made that every feature works on every model.
+The app builds successfully, the 152 offline checks pass, and the window layouts have been visually inspected. ASUS ACPI diagnostics and an NVIDIA temperature read were obtained on the GA403UP development laptop. Live writes for performance, fan curves, power limits, charging limits, GPU routing/restarts, scheduled startup, and suspend/resume have not all been independently verified. Other Zephyrus models have simulated compatibility coverage, not physical validation; no claim is made that every feature works on every model.
 
 The executable is unsigned. CPU and memory use have not been benchmarked against G-Helper. The app makes no network requests and uses the installed ASUS/NVIDIA drivers rather than installing its own driver.
 

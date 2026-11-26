@@ -21,11 +21,11 @@ public class AdvancedFansPanel : UserControl {
         for(int i=0;i<8;i++) { temps[i]=Number(59+i*40,34,38,1,100); speeds[i]=Number(59+i*40,66,38,0,100); }
         apply.Text="Apply fan"; apply.SetBounds(250,101,128,28); apply.Click+=(s,e)=>Execute(()=> {
             byte[] curve=new byte[16]; for(int i=0;i<8;i++) {curve[i]=(byte)temps[i].Value;curve[i+8]=(byte)speeds[i].Value;}
-            ValidateCurve(curve); main.Guard(); main.Hw.Set(Id.Curves[curveFans[fan.SelectedIndex]],curve);
+            main.ApplyFanCurve(Id.Curves[curveFans[fan.SelectedIndex]],curve);
             result.Text="Fan curve accepted. Other fans were unchanged.";
         }); Controls.Add(apply);
         var reset=new Button { Text="Restore firmware defaults" }; reset.SetBounds(0,101,220,28);
-        reset.Click+=(s,e)=>Execute(()=> {main.Guard();if(mode<0)throw new InvalidOperationException("Select a performance mode in the main window first.");main.Hw.Write(Id.Mode,mode);LoadCurve();result.Text="Firmware performance profile reapplied.";}); Controls.Add(reset);
+        reset.Click+=(s,e)=>Execute(()=> {if(mode<0)throw new InvalidOperationException("Select a performance mode in the main window first.");main.ChangeMode(mode);result.Text="Firmware performance profile reapplied.";}); Controls.Add(reset);
         LabelAt("CPU power limits",0,143,300,23).Font=new Font(Font,FontStyle.Bold);
         limits=LaptopCapabilities.PowerLimits(main.Hw,main.CpuVendor);
         for(int i=0;i<limits.Length;i++) {
@@ -42,7 +42,7 @@ public class AdvancedFansPanel : UserControl {
                 if(powerEnabled[i].Checked&&powerEnabled[j].Checked&&power[i].Value>power[j].Value)
                     throw new InvalidOperationException(limits[i].Name+" must not exceed "+limits[j].Name+".");
             main.Guard();
-            for(int i=0;i<limits.Length;i++) if(powerEnabled[i].Checked) { main.Hw.Write(limits[i].Id,(int)power[i].Value); result.Text=limits[i].Name+" applied."; }
+            for(int i=0;i<limits.Length;i++) if(powerEnabled[i].Checked) { main.ApplyPowerLimit(limits[i].Id,(int)power[i].Value); result.Text=limits[i].Name+" applied."; }
             result.Text="Selected power limits accepted.";
         }); Controls.Add(powerApply);
         powerApply.Enabled=limits.Length>0;

@@ -12,12 +12,18 @@ public class FakeHardware : IHardware {
     };
     internal int Writes,ModeReads;
     internal uint? RejectWrite;
+    internal bool ResetOverridesOnMode;
+    internal List<uint> WriteIds=new List<uint>();
     internal HashSet<uint> UnsupportedCurves=new HashSet<uint>();
     internal Dictionary<uint,int> ReadErrors=new Dictionary<uint,int>(),GetErrors=new Dictionary<uint,int>();
     internal Dictionary<uint,byte[]> ReadReplies=new Dictionary<uint,byte[]>();
     public int Get(uint id) {if(id==Id.Mode)ModeReads++;if(GetErrors.ContainsKey(id))throw new System.ComponentModel.Win32Exception(GetErrors[id]);return Values.ContainsKey(id)?Values[id]:-1;}
     public byte[] Read(uint id,int argument) {if(ReadErrors.ContainsKey(id))throw new System.ComponentModel.Win32Exception(ReadErrors[id]);if(UnsupportedCurves.Contains(id))throw new System.ComponentModel.Win32Exception(1);if(ReadReplies.ContainsKey(id))return ReadReplies[id];return new byte[]{30,40,50,60,70,80,90,100,0,10,20,35,50,65,85,100};}
-    public void Set(uint id,byte[] value) {if(RejectWrite==id)throw new InvalidOperationException("Simulated firmware rejection.");Writes++; if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);}
+    public void Set(uint id,byte[] value) {
+        if(RejectWrite==id)throw new InvalidOperationException("Simulated firmware rejection.");Writes++;WriteIds.Add(id);
+        if(value.Length==4)Values[id]=BitConverter.ToInt32(value,0);else if(Id.Curves.Contains(id))ReadReplies[id]=(byte[])value.Clone();
+        if(id==Id.Mode&&ResetOverridesOnMode) {foreach(uint curve in Id.Curves)ReadReplies.Remove(curve);foreach(uint power in Id.Power)Values[power]=35;}
+    }
     public void Dispose() {}
 }
 static class Tests {
@@ -68,6 +74,7 @@ static class Tests {
             ScrollingFans();
             DriverBuffers();
             FirmwareDrafts();
+            PowerChanges();
             string old=Preferences.Folder;
             Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-settings");
             var prefs=new Preferences {Optimized=true,AutoScreen=true,ChargeLimit=75,ChargeConfigured=true};prefs.Save();prefs.ChargeLimit=80;prefs.Save();
@@ -125,6 +132,60 @@ static class Tests {
     }
     static System.Collections.Generic.IEnumerable<Control> Descendants(Control parent) {
         foreach(Control child in parent.Controls) {yield return child;foreach(var nested in Descendants(child))yield return nested;}
+    }
+    static void PowerChanges() {
+        var changes=new PowerTransitions();
+        Assert(!changes.Observe(PowerLineStatus.Unknown)&&!changes.Observe(PowerLineStatus.Online),"Initial power reading establishes a baseline without restoring a profile");
+        Assert(!changes.Observe(PowerLineStatus.Online)&&!changes.Observe(PowerLineStatus.Online),"Repeated battery status notifications do not schedule profile writes");
+        Assert(changes.Observe(PowerLineStatus.Offline)&&!changes.Observe(PowerLineStatus.Offline),"Unplugging schedules one restore rather than one per notification");
+        Assert(!changes.Observe(PowerLineStatus.Unknown)&&changes.Observe(PowerLineStatus.Online),"Unknown power readings preserve the last known source");
+        Assert(changes.Observe(PowerLineStatus.Online,true)&&!changes.Observe(PowerLineStatus.Online),"Resume schedules a restore even when the power source is unchanged");
+        Assert(!changes.Observe(PowerLineStatus.Unknown,true)&&changes.Observe(PowerLineStatus.Online),"Resume with unknown power defers restoration until a known reading");
+        string old=Preferences.Folder;Preferences.Folder=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-power-settings");
+        try {
+            using(var hw=new FakeHardware()) {
+                foreach(int mode in new[]{0,1,2}) {
+                    var prefs=new Preferences {LastPerformanceMode=mode};hw.Values[Id.Mode]=3;hw.WriteIds.Clear();hw.ModeReads=0;
+                    var errors=PowerRestore.Apply(hw,prefs,new SessionOverrides(),()=>{});
+                    Assert(errors.Length==0&&hw.Values[Id.Mode]==mode&&hw.WriteIds.SequenceEqual(new[]{Id.Mode})&&hw.ModeReads==0,"Power change restores selected "+new[]{"Balanced","Turbo","Silent"}[mode]+" without ambiguous firmware readback");
+                }
+                hw.WriteIds.Clear();PowerRestore.Apply(hw,new Preferences(),new SessionOverrides(),()=>{});
+                Assert(hw.WriteIds.Count==0,"Power changes do not invent a mode when the user has never selected one");
+                var session=new SessionOverrides();var curve=hw.Read(0,0);curve[8]=4;var savedCurve=(byte[])curve.Clone();
+                session.ApplyCurve(hw,Id.Curves[0],curve);session.ApplyPower(hw,Id.Power[0],25);curve[8]=9;
+                hw.ResetOverridesOnMode=true;hw.WriteIds.Clear();var selected=new Preferences {LastPerformanceMode=2,ChargeConfigured=true,ChargeLimit=80};bool automatic=false;
+                var result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==0&&hw.WriteIds.SequenceEqual(new[]{Id.Mode,Id.Curves[0],Id.Power[0],Id.Battery})&&hw.ReadReplies[Id.Curves[0]].SequenceEqual(savedCurve)&&hw.Values[Id.Power[0]]==25&&automatic,"Profile restores precede cloned session overrides, charge limit, and automatic settings");
+                hw.RejectWrite=Id.Power[0];bool rejected=false;
+                try {session.ApplyPower(hw,Id.Power[0],30);}catch(InvalidOperationException){rejected=true;}
+                hw.RejectWrite=null;PowerRestore.Apply(hw,selected,session,()=>{});
+                Assert(rejected&&session.Count==2&&hw.Values[Id.Power[0]]==25,"Rejected custom writes do not replace the last accepted session values");
+                hw.RejectWrite=Id.Mode;hw.WriteIds.Clear();automatic=false;
+                result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==1&&hw.WriteIds.SequenceEqual(new[]{Id.Battery})&&automatic&&session.Count==2,"Rejected profile restore skips profile-specific overrides but still applies independent settings");
+                hw.RejectWrite=Id.Curves[0];hw.WriteIds.Clear();automatic=false;
+                result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==1&&hw.WriteIds.Contains(Id.Power[0])&&hw.WriteIds.Contains(Id.Battery)&&automatic,"One failed session override does not block power limits, charging, or automatic settings");
+                hw.RejectWrite=Id.Battery;automatic=false;
+                result=PowerRestore.Apply(hw,selected,session,()=>automatic=true);
+                Assert(result.Length==1&&automatic,"Charge-limit restoration failure does not block automatic GPU and screen settings");
+                hw.RejectWrite=null;
+                result=PowerRestore.Apply(hw,selected,session,()=> {throw new InvalidOperationException("Automatic setting rejected.");});
+                Assert(result.Length==1&&hw.Values[Id.Mode]==2,"Automatic settings failure does not undo the restored performance mode");
+                hw.RejectWrite=Id.Mode;rejected=false;
+                try {selected.SelectPerformanceMode(hw,0,session.Clear);}catch(InvalidOperationException){rejected=true;}
+                Assert(rejected&&session.Count==2&&selected.LastPerformanceMode==2,"Failed manual mode selection preserves session overrides");
+                hw.RejectWrite=null;selected.SelectPerformanceMode(hw,0,session.Clear);hw.WriteIds.Clear();PowerRestore.Apply(hw,selected,session,()=>{});
+                Assert(session.Count==0&&hw.Values[Id.Mode]==0&&hw.WriteIds.SequenceEqual(new[]{Id.Mode,Id.Battery}),"A new manual mode clears previous overrides and wins over a pending power restore");
+                var attempted=new List<string>();bool screen=false;
+                PowerRestore.Attempt(attempted,"GPU",()=> {throw new InvalidOperationException("GPU unavailable.");});
+                PowerRestore.Attempt(attempted,"Screen",()=>screen=true);
+                Assert(attempted.Count==1&&screen,"Independent automatic actions continue after a GPU failure");
+            }
+        } finally {
+            string path=Path.Combine(Preferences.Folder,"settings.xml");if(File.Exists(path))File.Delete(path);
+            if(Directory.Exists(Preferences.Folder))Directory.Delete(Preferences.Folder);Preferences.Folder=old;
+        }
     }
     static void FirmwareDrafts() {
         byte[][] reported={

@@ -17,10 +17,10 @@ public class Preferences {
     public int LastPerformanceMode=-1;
     public bool WindowPositionSaved;
     public int WindowX,WindowY;
-    internal void SelectPerformanceMode(IHardware hardware,int value) {
+    internal void SelectPerformanceMode(IHardware hardware,int value,Action accepted=null) {
         if(value<0||value>2)throw new ArgumentOutOfRangeException("value");
         hardware.Write(Id.Mode,value);
-        LastPerformanceMode=value;Save();
+        LastPerformanceMode=value;if(accepted!=null)accepted();Save();
     }
     internal void RememberWindow(Point location) {
         WindowX=location.X;WindowY=location.Y;WindowPositionSaved=true;Save();
@@ -178,12 +178,15 @@ public class MainForm : Form {
     readonly Button[] modeButtons=new Button[3],gpuButtons=new Button[4],screenButtons=new Button[3];
     readonly TrackBar limit=new PointerTrackBar(); readonly CheckBox startup=new CheckBox();
     readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
+    readonly System.Windows.Forms.Timer powerTimer=new System.Windows.Forms.Timer();
+    readonly PowerTransitions powerTransitions=new PowerTransitions();
+    readonly SessionOverrides sessionOverrides=new SessionOverrides();
     readonly NvidiaTemperature nvidia=new NvidiaTemperature();
     readonly BatteryTelemetry batteryTelemetry=new BatteryTelemetry();
     readonly Label batteryPower=new Label(),batteryTime=new Label();
     internal FansPanel fansPanel; Button fansToggle; bool fansExpanded;
     internal readonly VerticalScrollPanel contentHost=new VerticalScrollPanel();
-    NotifyIcon tray; bool quitting,initializing=true,paused; int lastPower=-1; string panel;
+    NotifyIcon tray; bool quitting,initializing=true,paused; string panel;
     int mode {get {return prefs.LastPerformanceMode>=0&&prefs.LastPerformanceMode<=2?prefs.LastPerformanceMode:preview?1:-1;}}
     public MainForm(IHardware hardware,Preferences settings,bool demo,string cpuVendor=null,float previewScale=0) {
         SuspendLayout();
@@ -240,6 +243,7 @@ public class MainForm : Form {
         }
         Scale(new SizeF(UiScale,UiScale));
         contentHost.SetContentHeight(contentHost.ClientSize.Height);
+        powerTimer.Interval=2000;powerTimer.Tick+=(s,e)=>RestoreAfterPowerChange();
         initializing=false; RefreshState();
         timer.Interval=3000; timer.Tick+=(s,e)=> { timer.Interval=Visible?3000:30000; RefreshState(); }; if(!preview)timer.Start();
         SystemEvents.PowerModeChanged+=OnPower;
@@ -283,6 +287,7 @@ public class MainForm : Form {
     static string Temperature(int n) { return n>0&&n<130?n+"°C":"—"; }
     static string Fan(int raw) { int n=raw&65535; return raw>=0&&n<=120?n+"%":"—"; }
     void RefreshState() {
+        if(!preview)ObservePower(SystemInformation.PowerStatus.PowerLineStatus);
         // Windows battery status is independent of ASUS ACPI availability.
         float battery=SystemInformation.PowerStatus.BatteryLifePercent;
         charge.Text=battery>=0&&battery<=1?"Charge: "+(battery*100).ToString("0.0")+"%":"Charge unavailable";
@@ -319,9 +324,6 @@ public class MainForm : Form {
             if(preview)status.Text="Preview · sample readings · hardware changes disabled";
             else if(paused)status.Text="Paused — exit G-Helper to enable controls";
             else if(status.Text.StartsWith("Paused")) status.Text="Ready";
-            int power=SystemInformation.PowerStatus.PowerLineStatus==PowerLineStatus.Online?1:0;
-            if(!preview&&!paused&&lastPower>=0&&lastPower!=power) ApplyAutomatic();
-            lastPower=power;
         } catch(Exception ex) { status.Text=ex.Message; }
     }
     internal void ToggleFans() {
@@ -340,7 +342,9 @@ public class MainForm : Form {
         contentHost.ScrollTo(expanded?fansToggle.Top:0);
         Location=anchor;
     }
-    internal void ChangeMode(int value) { Guard(); prefs.SelectPerformanceMode(Hw,value); if(fansPanel!=null)fansPanel.SetMode(value); }
+    internal void ChangeMode(int value) { Guard(); prefs.SelectPerformanceMode(Hw,value,sessionOverrides.Clear); if(fansPanel!=null)fansPanel.SetMode(value); }
+    internal void ApplyFanCurve(uint id,byte[] curve) {Guard();sessionOverrides.ApplyCurve(Hw,id,curve);}
+    internal void ApplyPowerLimit(uint id,int value) {Guard();sessionOverrides.ApplyPower(Hw,id,value);}
     void ApplyLimit() { Run(()=> { Guard(); Hw.Write(Id.Battery,limit.Value); prefs.ChargeLimit=limit.Value; prefs.ChargeConfigured=true; prefs.Save(); }); }
     void ChangeGpu(int target) {
         Guard(); int mux=Hw.Get(Id.Mux),eco=Hw.Get(Id.Eco);
@@ -370,12 +374,37 @@ public class MainForm : Form {
         Guard(); var power=SystemInformation.PowerStatus.PowerLineStatus;
         if(power==PowerLineStatus.Unknown)return;
         bool plugged=power==PowerLineStatus.Online;
-        if(prefs.Optimized && Hw.Get(Id.Mux)!=0&&LaptopCapabilities.Binary(Hw.Get(Id.Eco))) Hw.EcoMode(!plugged);
-        if(prefs.AutoScreen) { string name=Display.InternalPanel(); int[] rates=Display.Rates(name); if(rates.Length>0)Display.Set(name,plugged?rates.Max():rates.Contains(60)?60:rates.Min()); }
+        var errors=new System.Collections.Generic.List<string>();
+        if(prefs.Optimized)PowerRestore.Attempt(errors,"GPU",()=> {if(Hw.Get(Id.Mux)!=0&&LaptopCapabilities.Binary(Hw.Get(Id.Eco)))Hw.EcoMode(!plugged);});
+        if(prefs.AutoScreen)PowerRestore.Attempt(errors,"Screen",()=> {string name=Display.InternalPanel();int[] rates=Display.Rates(name);if(rates.Length>0)Display.Set(name,plugged?rates.Max():rates.Contains(60)?60:rates.Min());});
+        if(errors.Count>0)throw new InvalidOperationException(string.Join("; ",errors));
+    }
+    void ObservePower(PowerLineStatus power,bool resumed=false) {
+        if(powerTransitions.Observe(power,resumed)) {powerTimer.Stop();powerTimer.Start();}
+    }
+    void RestoreAfterPowerChange() {
+        powerTimer.Stop();if(preview||IsDisposed)return;
+        var power=SystemInformation.PowerStatus.PowerLineStatus;
+        if(power==PowerLineStatus.Unknown) {powerTransitions.Observe(power,true);return;}
+        if(powerTransitions.Observe(power)) {powerTimer.Start();return;}
+        string[] errors;
+        try {Guard();errors=PowerRestore.Apply(Hw,prefs,sessionOverrides,ApplyAutomatic);}
+        catch(Exception ex) {errors=new[]{ex.Message};}
+        status.Text=errors.Length==0?"Settings restored — "+(power==PowerLineStatus.Online?"AC power":"battery"):"Could not restore all settings; see Power restore.log";
+        if(!preview)try {
+            string path=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"Power restore.log");
+            if(File.Exists(path)&&new FileInfo(path).Length>32768)File.WriteAllText(path,"");
+            File.AppendAllText(path,DateTime.Now.ToString("s")+" source="+power+" selected mode="+prefs.LastPerformanceMode+" "+(errors.Length==0?"restored":string.Join("; ",errors))+Environment.NewLine);
+        } catch {}
+        RefreshState();
     }
     void OnPower(object sender,PowerModeChangedEventArgs e) {
-        if(e.Mode==PowerModes.Suspend || preview || !IsHandleCreated || IsDisposed)return;
-        BeginInvoke((Action)(()=>Run(()=> { Guard(); ApplyAutomatic(); if(e.Mode==PowerModes.Resume&&prefs.ChargeConfigured)Hw.Write(Id.Battery,prefs.ChargeLimit); })));
+        if(preview||!IsHandleCreated||IsDisposed)return;
+        try {BeginInvoke((Action)(()=> {
+            if(IsDisposed)return;
+            if(e.Mode==PowerModes.Suspend) {powerTimer.Stop();return;}
+            ObservePower(SystemInformation.PowerStatus.PowerLineStatus,e.Mode==PowerModes.Resume);RefreshState();
+        }));}catch(InvalidOperationException) {}
     }
     protected override void WndProc(ref Message message) {
         if(WindowActivation.Message!=0&&message.Msg==(int)WindowActivation.Message) {
@@ -383,6 +412,6 @@ public class MainForm : Form {
         }
         base.WndProc(ref message);
     }
-    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if(disposing) { SystemEvents.PowerModeChanged-=OnPower; timer.Dispose();powerTimer.Dispose(); nvidia.Dispose(); if(tray!=null)tray.Dispose(); } base.Dispose(disposing); }
 }
 }
